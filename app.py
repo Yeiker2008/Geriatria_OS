@@ -1,5 +1,5 @@
 # ==========================================
-# GERIATRÍA OS v1.0 - CLINICAL ENTERPRISE
+# GERIATRÍA OS v1.5 - ENTERPRISE CLINICAL SUITE
 # ==========================================
 
 import streamlit as st
@@ -8,13 +8,10 @@ import os
 import uuid
 from datetime import datetime, timedelta, timezone
 import time
-import requests
-import json
-from html import escape
 
 # --- 1. CONFIGURACIÓN INICIAL DE PÁGINA ---
 st.set_page_config(
-    page_title="Geriatría OS | Clinical SaaS",
+    page_title="Geriatría OS | Clinical Enterprise",
     page_icon="🏥",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -38,22 +35,11 @@ except ImportError:
 # ==========================================
 @st.cache_resource
 def _almacen_cache():
-    return {"tablas": {}, "hojas": {}, "carpetas": {}, "listados": {}}
-
-@st.cache_data(ttl=3000, show_spinner=False)
-def obtener_token_fresco():
-    creds = Credentials.from_authorized_user_info({
-        "client_id": st.secrets["google_client_id"],
-        "client_secret": st.secrets["google_client_secret"],
-        "refresh_token": st.secrets["google_refresh_token"],
-        "token_uri": "https://oauth2.googleapis.com/token"
-    })
-    creds.refresh(Request())
-    return creds.token
+    return {"tablas": {}, "hojas": {}}
 
 @st.cache_resource
 def conectar_gsheets():
-    """Conecta a Google Sheets. Si la base de datos no existe, la crea con sus 9 pestañas clínicas."""
+    """Conecta a Google Sheets. Si la base de datos no existe, la crea con sus pestañas clínicas."""
     if not GSPREAD_DISPONIBLE: 
         return None
     try:
@@ -69,13 +55,8 @@ def conectar_gsheets():
         try:
             sheet = client.open(nombre_hoja)
         except gspread.SpreadsheetNotFound:
-            # Auto-creación del libro y sus 9 pestañas clínicas
             sheet = client.create(nombre_hoja)
-            pestañas = [
-                "residentes", "signos_vitales", "notas_soapie", 
-                "kardex_meds", "escalas", "usuarios", 
-                "logs", "memos", "directorio"
-            ]
+            pestañas = ["residentes", "signos_vitales", "notas_soapie", "kardex_meds", "escalas", "usuarios", "logs"]
             first_sheet = sheet.get_sheet_by_id(0)
             first_sheet.update_title(pestañas[0])
             for p in pestañas[1:]:
@@ -95,7 +76,6 @@ def _hoja(nombre_tabla):
     return hojas[nombre_tabla]
 
 def leer_tabla(nombre_tabla, columnas_def):
-    """Lee la tabla remota o la crea automáticamente en CSV local si la red falla."""
     tablas = _almacen_cache()["tablas"]
     guardado = tablas.get(nombre_tabla)
     if guardado and (time.time() - guardado[0]) < TTL_TABLAS:
@@ -108,7 +88,7 @@ def leer_tabla(nombre_tabla, columnas_def):
             tablas[nombre_tabla] = (time.time(), df)
             return df.copy()
         except Exception as e:
-            print(f"⚠️ [LOG SISTEMA]: Releyendo hoja {nombre_tabla} -> {e}")
+            print(f"⚠️ [LOG SISTEMA]: Error leyendo {nombre_tabla} -> {e}")
             _almacen_cache()["hojas"].pop(nombre_tabla, None)
     
     arch = f"db_{nombre_tabla}.csv"
@@ -132,180 +112,178 @@ def guardar_tabla(df, nombre_tabla):
     _almacen_cache()["tablas"].pop(nombre_tabla, None)
 
 # ==========================================
-# 4. CONTROL DE SESIONES Y MOTOR CSS GLASS
+# 4. MOTOR CSS: DISEÑO CLÍNICO DE LUJO
 # ==========================================
-for v in ['autenticado']: 
-    if v not in st.session_state: st.session_state[v] = False
-for v in ['usuario_actual', 'rol_actual', 'alias_actual', 'reg_profesional']: 
-    if v not in st.session_state: st.session_state[v] = ""
-if 'pagina_actual' not in st.session_state: st.session_state.pagina_actual = 'Hub'
-
-def cambiar_pagina(p): st.session_state.pagina_actual = p
-
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap');
 
 :root {
-  --navy: #0A192F; --emerald: #10B981; --emerald-dark: #047857;
-  --gold: #D4AF37; --bg-color: #F4F7F6; --text-main: #1F2937;
-  --glass-bg: rgba(255, 255, 255, 0.80);
-  --glass-border: rgba(255, 255, 255, 0.5);
-  --glass-shadow: 0 8px 32px 0 rgba(10, 25, 47, 0.08);
+  --navy: #0A192F; --navy-light: #132744; --emerald: #10B981; --emerald-dark: #047857;
+  --gold: #D4AF37; --bg-canvas: #F8FAFC; --card-bg: #FFFFFF; --text-main: #1E293B;
+  --text-muted: #64748B; --border-color: #CBD5E1; --radius: 16px;
 }
 
 html, body, [class*="css"] { font-family: 'Plus Jakarta Sans', sans-serif; color: var(--text-main); }
-[data-testid="stAppViewContainer"] { background: linear-gradient(135deg, #F4F7F6 0%, #E5E9E8 100%) !important; }
-[data-testid="stHeader"], [data-testid="stSidebar"] { display: none !important; }
-.block-container { padding: 5.5rem 2rem 2rem 2rem !important; max-width: 1400px; }
+[data-testid="stAppViewContainer"] { background: linear-gradient(135deg, #F1F5F9 0%, #E2E8F0 100%) !important; }
+[data-testid="stHeader"], [data-testid="stToolbar"] { display: none !important; }
+.block-container { padding: 2rem 2.5rem 3rem 2.5rem !important; max-width: 1450px; }
 
 h1, h2, h3 { font-family: 'Fraunces', serif !important; color: var(--navy) !important; font-weight: 700; }
 
-.glass-card {
-  background: var(--glass-bg); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--glass-border); border-radius: 20px; padding: 25px;
-  box-shadow: var(--glass-shadow); margin-bottom: 20px;
+/* Tarjetas y Contenedores */
+[data-testid="stVerticalBlockBorderWrapper"] {
+  background: var(--card-bg) !important;
+  border: 1px solid var(--border-color) !important;
+  border-radius: var(--radius) !important;
+  box-shadow: 0 10px 25px -5px rgba(10, 25, 47, 0.05), 0 8px 10px -6px rgba(10, 25, 47, 0.05) !important;
+  padding: 20px !important;
 }
 
-.sticky-navbar {
-  position: fixed; top: 0; left: 0; width: 100%; height: 70px;
-  background: rgba(10, 25, 47, 0.95); backdrop-filter: blur(10px);
-  z-index: 999999; display: flex; align-items: center; justify-content: space-between;
-  padding: 0 2rem; border-bottom: 3px solid var(--emerald);
+/* Campos de entrada visibles y profesionales */
+input, textarea, select, [data-baseweb="select"] > div, [data-baseweb="input"] > div {
+  background-color: #FFFFFF !important;
+  color: #0F172A !important;
+  border: 1.5px solid var(--border-color) !important;
+  border-radius: 12px !important;
+  font-weight: 500 !important;
 }
-.navbar-brand { font-family: 'Fraunces', serif; font-size: 1.4rem; color: var(--emerald); font-weight: 700; }
-.navbar-brand span { color: white; font-family: 'Plus Jakarta Sans', sans-serif; font-size: 0.9rem; font-weight: 400; }
+input:focus, textarea:focus, [data-baseweb="select"]:focus-within {
+  border-color: var(--emerald) !important;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15) !important;
+}
 
-div.stButton > button {
+/* Etiquetas visibles */
+[data-testid="stWidgetLabel"] p, label p {
+  color: var(--navy) !important;
+  font-weight: 700 !important;
+  font-size: 0.9rem !important;
+}
+
+/* Botones principales de alta gama */
+div.stButton > button, div[data-testid="stFormSubmitButton"] > button {
   background: linear-gradient(135deg, var(--emerald) 0%, var(--emerald-dark) 100%) !important;
   color: white !important; font-weight: 700 !important; border: none !important;
-  border-radius: 12px !important; padding: 0.5rem 1rem !important;
+  border-radius: 12px !important; padding: 0.6rem 1.2rem !important;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3) !important;
+  transition: all 0.2s ease-in-out !important;
 }
+div.stButton > button:hover, div[data-testid="stFormSubmitButton"] > button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(16, 185, 129, 0.4) !important;
+}
+
+/* Barra superior de navegación */
+.top-navbar {
+  background: var(--navy); border-radius: 16px; padding: 12px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+  box-shadow: 0 10px 25px rgba(10, 25, 47, 0.2); margin-bottom: 25px;
+}
+.top-navbar .brand { color: white; font-family: 'Fraunces', serif; font-size: 1.3rem; font-weight: 700; }
+.top-navbar .badge { color: var(--emerald); background: rgba(16, 185, 129, 0.15); padding: 4px 12px; border-radius: 20px; font-size: 0.85rem; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 5. CARGA INICIAL Y LOGIN INMERSIVO (LIMPIO)
+# 5. CONTROL DE SESIÓN Y LOGIN INMERSIVO
 # ==========================================
-df_usr = leer_tabla("usuarios", ["Usuario", "Password", "Rol", "Alias", "Reg_Profesional", "Session_Token"])
+for v in ['autenticado', 'usuario_actual', 'rol_actual', 'alias_actual', 'reg_profesional']: 
+    if v not in st.session_state: 
+        st.session_state[v] = False if v == 'autenticado' else ""
+if 'pagina_actual' not in st.session_state: 
+    st.session_state.pagina_actual = 'Hub'
 
+df_usr = leer_tabla("usuarios", ["Usuario", "Password", "Rol", "Alias", "Reg_Profesional"])
 if df_usr.empty:
     df_usr = pd.DataFrame([{
-        "Usuario": "enfermeria", 
-        "Password": "123", 
-        "Rol": "Enfermero/a", 
-        "Alias": "Enf. Turno", 
-        "Reg_Profesional": "TP-998877", 
-        "Session_Token": ""
+        "Usuario": "enfermeria", "Password": "123", "Rol": "Enfermero/a", 
+        "Alias": "Enf. Turno", "Reg_Profesional": "TP-998877"
     }])
     guardar_tabla(df_usr, "usuarios")
 
 if not st.session_state.autenticado:
-    st.markdown("<br><br>", unsafe_allow_html=True)
-    col_l1, col_l2, col_l3 = st.columns([1, 1.2, 1])
-    
-    with col_l2:
+    st.markdown("<br><br><br>", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns([1, 1.1, 1])
+    with c2:
         with st.container(border=True):
-            st.markdown("<div style='text-align: center; font-size: 3rem;'>🏥</div>", unsafe_allow_html=True)
+            st.markdown("<div style='text-align: center; font-size: 3.5rem; margin-bottom: 5px;'>🏥</div>", unsafe_allow_html=True)
             st.markdown("<h1 style='text-align: center; margin-bottom: 0;'>Geriatría OS</h1>", unsafe_allow_html=True)
-            st.markdown("<p style='text-align: center; color: #6B7280; font-size: 0.9rem;'>Gestión Clínica y Notas de Enfermería</p>", unsafe_allow_html=True)
-            st.markdown("<hr style='margin: 15px 0;'>", unsafe_allow_html=True)
+            st.markdown("<p style='text-align: center; color: #64748B; font-size: 0.95rem; margin-bottom: 20px;'>Enterprise Clinical Suite & Notas SOAPIE</p>", unsafe_allow_html=True)
             
-            user_input = st.text_input("Usuario", placeholder="ID de Usuario")
-            pass_input = st.text_input("Contraseña", type="password", placeholder="••••••••")
+            user_input = st.text_input("Usuario del Sistema", placeholder="Ej: enfermeria")
+            pass_input = st.text_input("Contraseña de Acceso", type="password", placeholder="••••••••")
             
             st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("INGRESAR AL SISTEMA", use_container_width=True):
-                user_match = df_usr[(df_usr["Usuario"].astype(str) == user_input) & (df_usr["Password"].astype(str) == pass_input)]
-                if not user_match.empty:
+            if st.button("INICIAR SESIÓN CLÍNICA", use_container_width=True):
+                match = df_usr[(df_usr["Usuario"].astype(str) == user_input) & (df_usr["Password"].astype(str) == pass_input)]
+                if not match.empty:
                     st.session_state.autenticado = True
                     st.session_state.usuario_actual = user_input
-                    st.session_state.rol_actual = user_match.iloc[0]["Rol"]
-                    st.session_state.alias_actual = user_match.iloc[0].get("Alias", user_input)
-                    st.session_state.reg_profesional = str(user_match.iloc[0].get("Reg_Profesional", "N/A"))
+                    st.session_state.rol_actual = match.iloc[0]["Rol"]
+                    st.session_state.alias_actual = match.iloc[0]["Alias"]
+                    st.session_state.reg_profesional = match.iloc[0]["Reg_Profesional"]
                     st.session_state.pagina_actual = 'Hub'
                     st.rerun()
                 else:
-                    st.error("Credenciales médicas incorrectas.")
+                    st.error("⚠️ Credenciales incorrectas. Verifique usuario y contraseña.")
     st.stop()
 
 # ==========================================
-# 6. STICKY NAVBAR Y NAVEGACIÓN
+# 6. NAVEGACIÓN SUPERIOR PROFESIONAL
 # ==========================================
 st.markdown(f"""
-<div class="sticky-navbar">
-    <div class="navbar-brand">
-        🏥 Geriatría OS <span>| {st.session_state.alias_actual} ({st.session_state.rol_actual})</span>
-    </div>
+<div class="top-navbar">
+    <div class="brand">🏥 Geriatría OS <span style="font-size:0.85rem; font-family:'Plus Jakarta Sans'; color:#94A3B8; font-weight:400;">| Módulo Gerontológico</span></div>
+    <div class="badge">👤 {st.session_state.alias_actual} ({st.session_state.rol_actual})</div>
 </div>
 """, unsafe_allow_html=True)
 
-st.markdown("<div style='position: fixed; top: 15px; right: 2rem; z-index: 999999; display: flex; gap: 8px;'>", unsafe_allow_html=True)
-c_nav = st.columns(4)
-with c_nav[0]: 
-    if st.button("🏠 Hub"): cambiar_pagina("Hub")
-with c_nav[1]: 
-    if st.button("📝 SOAPIE"): cambiar_pagina("SOAPIE")
-with c_nav[2]: 
-    if st.button("👴 Residentes"): cambiar_pagina("Residentes")
-with c_nav[3]: 
-    if st.button("🚪 Salir"): 
-        st.session_state.autenticado = False
-        st.rerun()
-st.markdown("</div>", unsafe_allow_html=True)
+nav_cols = st.columns(4)
+with nav_cols[0]:
+    if st.button("🏠 Centro de Mando", use_container_width=True): st.session_state.pagina_actual = 'Hub'; st.rerun()
+with nav_cols[1]:
+    if st.button("👴 Gestión Residentes", use_container_width=True): st.session_state.pagina_actual = 'Residentes'; st.rerun()
+with nav_cols[2]:
+    if st.button("📝 Notas SOAPIE", use_container_width=True): st.session_state.pagina_actual = 'SOAPIE'; st.rerun()
+with nav_cols[3]:
+    if st.button("🚪 Cerrar Sesión", use_container_width=True): st.session_state.autenticado = False; st.rerun()
+
+st.markdown("<br>", unsafe_allow_html=True)
 
 # ==========================================
-# 7. VISTAS Y MÓDULOS
+# 7. CARGA DE DATOS Y MÓDULOS
 # ==========================================
-if st.session_state.pagina_actual == 'Hub':
-    st.markdown("<h1>Centro de Mando Clínico</h1><p>Bienvenido al sistema de administración y enfermería.</p>", unsafe_allow_html=True)
-    st.markdown("<div class='glass-card'><h3>✅ Sistema Inicializado</h3><p>La base de datos y la interfaz de salud están operando correctamente.</p></div>", unsafe_allow_html=True)
-
-elif st.session_state.pagina_actual == 'SOAPIE':
-    st.markdown("<h1>📝 Notas de Enfermería (Metodología SOAPIE)</h1>", unsafe_allow_html=True)
-    st.markdown("<div class='glass-card'><p>Aquí irá el formulario inmutable de evoluciones clínicas.</p></div>", unsafe_allow_html=True)
-
-elif st.session_state.pagina_actual == 'Residentes':
-    st.markdown("<h1>👴 Directorio de Residentes</h1>", unsafe_allow_html=True)
-    st.markdown("<div class='glass-card'><p>Aquí irá el módulo de admisión de adultos mayores.</p></div>", unsafe_allow_html=True)
-# ==========================================
-# 8. MÓDULOS DEL SISTEMA: RESIDENTES Y SOAPIE
-# ==========================================
-
-# Cargamos las tablas de residentes y notas desde GSheets o CSV local
 df_res = leer_tabla("residentes", ["Cedula", "Nombre", "Fecha_Nacimiento", "EPS", "Habitacion", "Acudiente_Nombre", "Acudiente_Tel", "Estado", "F_Ingreso"])
 df_sop = leer_tabla("notas_soapie", ["ID_Nota", "Cedula", "Fecha_Hora", "Turno", "Autor", "Subjetivo", "Objetivo", "Analisis", "Plan", "Intervencion", "Evaluacion"])
 
+def cambiar_pagina(p): st.session_state.pagina_actual = p
+
 # --- HUB CENTRAL ---
 if st.session_state.pagina_actual == 'Hub':
-    st.markdown("<h1>Centro de Mando Clínico</h1><p>Control de turno y registro geriátrico de salud.</p>", unsafe_allow_html=True)
+    st.markdown("<h1>Centro de Mando Clínico</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='color: #64748B; margin-bottom: 20px;'>Panel general de control y supervisión gerátrica en tiempo real.</p>", unsafe_allow_html=True)
     
-    col1, col2, col3 = st.columns(3)
-    with col1:
+    col_h1, col_h2, col_h3 = st.columns(3)
+    with col_h1:
         with st.container(border=True):
-            st.markdown("### 📝 Notas SOAPIE")
-            st.markdown("Registro legal e inmutable de notas de enfermería por turno.")
-            if st.button("ABRIR NOTAS SOAPIE", key="b_so", use_container_width=True): 
-                cambiar_pagina("SOAPIE")
-                st.rerun()
-    with col2:
+            st.markdown("### 👴 Residentes Activos")
+            st.metric("Total en Centro", len(df_res[df_res["Estado"] == "Activo"]) if not df_res.empty else 0)
+    with col_h2:
         with st.container(border=True):
-            st.markdown("### 👴 Residentes")
-            st.markdown("Directorio de adultos mayores, ingresos y carpetas clínicas.")
-            if st.button("VER RESIDENTES", key="b_rs", use_container_width=True): 
-                cambiar_pagina("Residentes")
-                st.rerun()
-    with col3:
+            st.markdown("### 📝 Notas Registradas")
+            st.metric("Evoluciones SOAPIE", len(df_sop) if not df_sop.empty else 0)
+    with col_h3:
         with st.container(border=True):
-            st.markdown("### 📊 Estado General")
-            st.metric("Residentes Activos", len(df_res[df_res["Estado"] == "Activo"]) if not df_res.empty else 0)
+            st.markdown("### ⚖️ Marco Legal")
+            st.markdown("<p style='font-size:0.85rem; color:#64748B;'>Resolución 1995 de 1999 & Ley 911 de 2004 activas.</p>", unsafe_allow_html=True)
 
-# --- MÓDULO: GESTIÓN DE RESIDENTES ---
+# --- MÓDULO: RESIDENTES ---
 elif st.session_state.pagina_actual == 'Residentes':
-    st.markdown("<h1>👴 Gestión de Adultos Mayores</h1>", unsafe_allow_html=True)
+    st.markdown("<h1>Gestión de Residentes</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='color: #64748B; margin-bottom: 20px;'>Admisión y control de adultos mayores institucionalizados.</p>", unsafe_allow_html=True)
     
     with st.container(border=True):
-        st.subheader("Admisión de Nuevo Residente")
+        st.subheader("➕ Admisión de Nuevo Residente")
         with st.form("form_residente"):
             c1, c2, c3 = st.columns(3)
             with c1: cc_n = st.text_input("Cédula de Ciudadanía")
@@ -313,13 +291,14 @@ elif st.session_state.pagina_actual == 'Residentes':
             with c3: hab_n = st.text_input("Habitación / Cama")
             
             c4, c5, c6 = st.columns(3)
-            with c4: fnac_n = st.date_input("Fecha Nacimiento")
+            with c4: fnac_n = st.date_input("Fecha de Nacimiento")
             with c5: eps_n = st.text_input("EPS / Medicina Prepagada")
-            with c6: acud_n = st.text_input("Nombre de Acudiente / Familiar")
+            with c6: acud_n = st.text_input("Nombre del Familiar / Acudiente")
             
-            c7 = st.text_input("Teléfono de Emergencia Acudiente")
+            c7 = st.text_input("Teléfono de Contacto del Acudiente")
             
-            if st.form_submit_button("REGISTRAR ADMISIÓN", use_container_width=True):
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.form_submit_button("REGISTRAR ADMISIÓN CLÍNICA", use_container_width=True):
                 if cc_n and nom_n:
                     nuevo_res = pd.DataFrame([{
                         "Cedula": str(cc_n), "Nombre": nom_n, "Fecha_Nacimiento": str(fnac_n),
@@ -327,12 +306,12 @@ elif st.session_state.pagina_actual == 'Residentes':
                         "Acudiente_Tel": str(c7), "Estado": "Activo", "F_Ingreso": ahora_colombia().strftime("%Y-%m-%d")
                     }])
                     guardar_tabla(pd.concat([df_res, nuevo_res], ignore_index=True), "residentes")
-                    st.success("✅ Residente admitido y registrado en la base de datos clínica.")
+                    st.success("✅ Residente admitido exitosamente en el sistema.")
                     time.sleep(1)
                     st.rerun()
-                else: 
-                    st.error("Cédula y Nombre son requeridos.")
-            
+                else:
+                    st.error("⚠️ La cédula y el nombre completo son obligatorios.")
+
     if not df_res.empty:
         with st.container(border=True):
             st.subheader("📋 Directorio de Residentes Activos")
@@ -340,9 +319,11 @@ elif st.session_state.pagina_actual == 'Residentes':
 
 # --- MÓDULO: NOTAS SOAPIE ---
 elif st.session_state.pagina_actual == 'SOAPIE':
-    st.markdown("<h1>📝 Notas de Enfermería (Metodología SOAPIE)</h1>", unsafe_allow_html=True)
+    st.markdown("<h1>Notas de Enfermería (Metodología SOAPIE)</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='color: #64748B; margin-bottom: 20px;'>Evolución clínica inmutable sujeta a normatividad colombiana.</p>", unsafe_allow_html=True)
+    
     with st.container(border=True):
-        st.info("⚖️ **Cumplimiento Normativo:** Las notas de enfermería quedan registradas con marca de tiempo UTC-5 de Colombia y firma profesional inmutable.")
+        st.info("⚖️ **Garantía Legal:** Cada nota se sella con marca temporal UTC-5 y firma digital profesional inalterable.")
         
         res_activos = df_res[df_res["Estado"] == "Activo"] if not df_res.empty else pd.DataFrame()
         if not res_activos.empty:
@@ -350,17 +331,18 @@ elif st.session_state.pagina_actual == 'SOAPIE':
             cc_r = sel_res.split(" - ")[0]
             
             with st.form("form_soapie"):
-                turno = st.selectbox("Turno de Enfermería", ["Mañana (07:00 - 13:00)", "Tarde (13:00 - 19:00)", "Noche (19:00 - 07:00)"])
+                turno = st.selectbox("Turno Asignado", ["Mañana (07:00 - 13:00)", "Tarde (13:00 - 19:00)", "Noche (19:00 - 07:00)"])
                 
-                st.markdown("### 📋 Estructura de la Evolución Clínica")
-                s = st.text_area("S - Subjetivo (Lo que manifiesta el residente o familiar)")
-                o = st.text_area("O - Objetivo (Hallazgos físicos, examen y constantes vitales)")
-                a = st.text_area("A - Análisis (Juicio o diagnóstico de enfermería)")
-                p = st.text_area("P - Plan (Cuidados o intervenciones programadas)")
-                i = st.text_area("I - Intervención (Ejecución de actividades de enfermería)")
-                e = st.text_area("E - Evaluación (Respuesta y evolución del residente)")
+                st.markdown("### 📋 Estructura de Registro SOAPIE")
+                s = st.text_area("S - Subjetivo (Manifestaciones del paciente/familiar)")
+                o = st.text_area("O - Objetivo (Examen físico y signos vitales)")
+                a = st.text_area("A - Análisis (Juicio de enfermería)")
+                p = st.text_area("P - Plan (Cuidados programados)")
+                i = st.text_area("I - Intervención (Procedimientos ejecutados)")
+                e = st.text_area("E - Evaluación (Respuesta clínica del paciente)")
                 
-                if st.form_submit_button("FIRMAR Y GUARDAR NOTA INMUTABLE", use_container_width=True):
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.form_submit_button("FIRMAR Y ARCHIVAR NOTA INMUTABLE", use_container_width=True):
                     if s and o:
                         id_n = f"SOAPIE-{uuid.uuid4().hex[:6].upper()}"
                         f_hora = ahora_colombia().strftime("%Y-%m-%d %H:%M:%S")
@@ -373,10 +355,11 @@ elif st.session_state.pagina_actual == 'SOAPIE':
                         }])
                         
                         guardar_tabla(pd.concat([df_sop, nueva_nota], ignore_index=True), "notas_soapie")
-                        st.success("✅ Nota de Enfermería firmada digitalmente y archivada de forma inmutable.")
+                        st.success("✅ Nota SOAPIE guardada con éxito y sellada en la historia clínica.")
                         time.sleep(1)
                         st.rerun()
                     else:
-                        st.error("⚠️ Los campos Subjetivo y Objetivo son obligatorios.")
-        else: 
-            st.warning("⚠️ No hay residentes activos registrados. Primero debes admitir al menos un residente en el módulo correspondiente.")
+                        st.error("⚠️ Los campos Subjetivo y Objetivo son obligatorios para la firma legal.")
+        else:
+            st.warning("⚠️ No hay residentes activos registrados en el sistema.")
+            st.warning("⚠️ No hay residentes activos registrados en el sistema.")
