@@ -1,6 +1,7 @@
-streamlit
+
+streamlit>=1.35
 pandas
-gspread
-google-auth
-fpdf2
+gspread>=5.12
+google-auth>=2.23
 requests
+ 
