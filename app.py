@@ -185,7 +185,7 @@ div.stButton > button {
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 5. CARGA INICIAL Y LOGIN INMERSIVO
+# 5. CARGA INICIAL Y LOGIN INMERSIVO (LIMPIO)
 # ==========================================
 df_usr = leer_tabla("usuarios", ["Usuario", "Password", "Rol", "Alias", "Reg_Profesional", "Session_Token"])
 
@@ -201,31 +201,32 @@ if df_usr.empty:
     guardar_tabla(df_usr, "usuarios")
 
 if not st.session_state.autenticado:
-    st.markdown("""
-    <div style='display:flex; justify-content:center; align-items:center; height: 80vh;'>
-        <div class='glass-card' style='width: 420px; text-align: center; padding: 35px;'>
-            <div style='font-size: 3.5rem; color: var(--emerald); margin-bottom: 15px;'>🏥</div>
-            <h1 style='margin-bottom: 5px;'>Geriatría OS</h1>
-            <p style='color: #6B7280; margin-bottom: 25px; font-size: 0.9rem;'>Gestión Clínica y Notas de Enfermería</p>
-    """, unsafe_allow_html=True)
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    col_l1, col_l2, col_l3 = st.columns([1, 1.2, 1])
     
-    col1, col2, col3 = st.columns([1,4,1])
-    with col2:
-        user_input = st.text_input("Usuario", placeholder="ID de Usuario")
-        pass_input = st.text_input("Contraseña", type="password", placeholder="••••••••")
-        if st.button("INGRESAR AL SISTEMA"):
-            user_match = df_usr[(df_usr["Usuario"].astype(str) == user_input) & (df_usr["Password"].astype(str) == pass_input)]
-            if not user_match.empty:
-                st.session_state.autenticado = True
-                st.session_state.usuario_actual = user_input
-                st.session_state.rol_actual = user_match.iloc[0]["Rol"]
-                st.session_state.alias_actual = user_match.iloc[0].get("Alias", user_input)
-                st.session_state.reg_profesional = str(user_match.iloc[0].get("Reg_Profesional", "N/A"))
-                st.session_state.pagina_actual = 'Hub'
-                st.rerun()
-            else:
-                st.error("Credenciales médicas incorrectas.")
-    st.markdown("</div></div>", unsafe_allow_html=True)
+    with col_l2:
+        with st.container(border=True):
+            st.markdown("<div style='text-align: center; font-size: 3rem;'>🏥</div>", unsafe_allow_html=True)
+            st.markdown("<h1 style='text-align: center; margin-bottom: 0;'>Geriatría OS</h1>", unsafe_allow_html=True)
+            st.markdown("<p style='text-align: center; color: #6B7280; font-size: 0.9rem;'>Gestión Clínica y Notas de Enfermería</p>", unsafe_allow_html=True)
+            st.markdown("<hr style='margin: 15px 0;'>", unsafe_allow_html=True)
+            
+            user_input = st.text_input("Usuario", placeholder="ID de Usuario")
+            pass_input = st.text_input("Contraseña", type="password", placeholder="••••••••")
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("INGRESAR AL SISTEMA", use_container_width=True):
+                user_match = df_usr[(df_usr["Usuario"].astype(str) == user_input) & (df_usr["Password"].astype(str) == pass_input)]
+                if not user_match.empty:
+                    st.session_state.autenticado = True
+                    st.session_state.usuario_actual = user_input
+                    st.session_state.rol_actual = user_match.iloc[0]["Rol"]
+                    st.session_state.alias_actual = user_match.iloc[0].get("Alias", user_input)
+                    st.session_state.reg_profesional = str(user_match.iloc[0].get("Reg_Profesional", "N/A"))
+                    st.session_state.pagina_actual = 'Hub'
+                    st.rerun()
+                else:
+                    st.error("Credenciales médicas incorrectas.")
     st.stop()
 
 # ==========================================
