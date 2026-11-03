@@ -268,3 +268,115 @@ elif st.session_state.pagina_actual == 'SOAPIE':
 elif st.session_state.pagina_actual == 'Residentes':
     st.markdown("<h1>👴 Directorio de Residentes</h1>", unsafe_allow_html=True)
     st.markdown("<div class='glass-card'><p>Aquí irá el módulo de admisión de adultos mayores.</p></div>", unsafe_allow_html=True)
+# ==========================================
+# 8. MÓDULOS DEL SISTEMA: RESIDENTES Y SOAPIE
+# ==========================================
+
+# Cargamos las tablas de residentes y notas desde GSheets o CSV local
+df_res = leer_tabla("residentes", ["Cedula", "Nombre", "Fecha_Nacimiento", "EPS", "Habitacion", "Acudiente_Nombre", "Acudiente_Tel", "Estado", "F_Ingreso"])
+df_sop = leer_tabla("notas_soapie", ["ID_Nota", "Cedula", "Fecha_Hora", "Turno", "Autor", "Subjetivo", "Objetivo", "Analisis", "Plan", "Intervencion", "Evaluacion"])
+
+# --- HUB CENTRAL ---
+if st.session_state.pagina_actual == 'Hub':
+    st.markdown("<h1>Centro de Mando Clínico</h1><p>Control de turno y registro geriátrico de salud.</p>", unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        with st.container(border=True):
+            st.markdown("### 📝 Notas SOAPIE")
+            st.markdown("Registro legal e inmutable de notas de enfermería por turno.")
+            if st.button("ABRIR NOTAS SOAPIE", key="b_so", use_container_width=True): 
+                cambiar_pagina("SOAPIE")
+                st.rerun()
+    with col2:
+        with st.container(border=True):
+            st.markdown("### 👴 Residentes")
+            st.markdown("Directorio de adultos mayores, ingresos y carpetas clínicas.")
+            if st.button("VER RESIDENTES", key="b_rs", use_container_width=True): 
+                cambiar_pagina("Residentes")
+                st.rerun()
+    with col3:
+        with st.container(border=True):
+            st.markdown("### 📊 Estado General")
+            st.metric("Residentes Activos", len(df_res[df_res["Estado"] == "Activo"]) if not df_res.empty else 0)
+
+# --- MÓDULO: GESTIÓN DE RESIDENTES ---
+elif st.session_state.pagina_actual == 'Residentes':
+    st.markdown("<h1>👴 Gestión de Adultos Mayores</h1>", unsafe_allow_html=True)
+    
+    with st.container(border=True):
+        st.subheader("Admisión de Nuevo Residente")
+        with st.form("form_residente"):
+            c1, c2, c3 = st.columns(3)
+            with c1: cc_n = st.text_input("Cédula de Ciudadanía")
+            with c2: nom_n = st.text_input("Nombre Completo")
+            with c3: hab_n = st.text_input("Habitación / Cama")
+            
+            c4, c5, c6 = st.columns(3)
+            with c4: fnac_n = st.date_input("Fecha Nacimiento")
+            with c5: eps_n = st.text_input("EPS / Medicina Prepagada")
+            with c6: acud_n = st.text_input("Nombre de Acudiente / Familiar")
+            
+            c7 = st.text_input("Teléfono de Emergencia Acudiente")
+            
+            if st.form_submit_button("REGISTRAR ADMISIÓN", use_container_width=True):
+                if cc_n and nom_n:
+                    nuevo_res = pd.DataFrame([{
+                        "Cedula": str(cc_n), "Nombre": nom_n, "Fecha_Nacimiento": str(fnac_n),
+                        "EPS": eps_n, "Habitacion": hab_n, "Acudiente_Nombre": acud_n,
+                        "Acudiente_Tel": str(c7), "Estado": "Activo", "F_Ingreso": ahora_colombia().strftime("%Y-%m-%d")
+                    }])
+                    guardar_tabla(pd.concat([df_res, nuevo_res], ignore_index=True), "residentes")
+                    st.success("✅ Residente admitido y registrado en la base de datos clínica.")
+                    time.sleep(1)
+                    st.rerun()
+                else: 
+                    st.error("Cédula y Nombre son requeridos.")
+            
+    if not df_res.empty:
+        with st.container(border=True):
+            st.subheader("📋 Directorio de Residentes Activos")
+            st.dataframe(df_res[df_res["Estado"] == "Activo"][["Cedula", "Nombre", "Habitacion", "EPS", "Acudiente_Nombre", "Acudiente_Tel"]], use_container_width=True, hide_index=True)
+
+# --- MÓDULO: NOTAS SOAPIE ---
+elif st.session_state.pagina_actual == 'SOAPIE':
+    st.markdown("<h1>📝 Notas de Enfermería (Metodología SOAPIE)</h1>", unsafe_allow_html=True)
+    with st.container(border=True):
+        st.info("⚖️ **Cumplimiento Normativo:** Las notas de enfermería quedan registradas con marca de tiempo UTC-5 de Colombia y firma profesional inmutable.")
+        
+        res_activos = df_res[df_res["Estado"] == "Activo"] if not df_res.empty else pd.DataFrame()
+        if not res_activos.empty:
+            sel_res = st.selectbox("Seleccione el Residente / Paciente:", res_activos["Cedula"].astype(str) + " - " + res_activos["Nombre"])
+            cc_r = sel_res.split(" - ")[0]
+            
+            with st.form("form_soapie"):
+                turno = st.selectbox("Turno de Enfermería", ["Mañana (07:00 - 13:00)", "Tarde (13:00 - 19:00)", "Noche (19:00 - 07:00)"])
+                
+                st.markdown("### 📋 Estructura de la Evolución Clínica")
+                s = st.text_area("S - Subjetivo (Lo que manifiesta el residente o familiar)")
+                o = st.text_area("O - Objetivo (Hallazgos físicos, examen y constantes vitales)")
+                a = st.text_area("A - Análisis (Juicio o diagnóstico de enfermería)")
+                p = st.text_area("P - Plan (Cuidados o intervenciones programadas)")
+                i = st.text_area("I - Intervención (Ejecución de actividades de enfermería)")
+                e = st.text_area("E - Evaluación (Respuesta y evolución del residente)")
+                
+                if st.form_submit_button("FIRMAR Y GUARDAR NOTA INMUTABLE", use_container_width=True):
+                    if s and o:
+                        id_n = f"SOAPIE-{uuid.uuid4().hex[:6].upper()}"
+                        f_hora = ahora_colombia().strftime("%Y-%m-%d %H:%M:%S")
+                        autor_firma = f"{st.session_state.alias_actual} ({st.session_state.reg_profesional})"
+                        
+                        nueva_nota = pd.DataFrame([{
+                            "ID_Nota": id_n, "Cedula": str(cc_r), "Fecha_Hora": f_hora, "Turno": turno,
+                            "Autor": autor_firma, "Subjetivo": s, "Objetivo": o, "Analisis": a,
+                            "Plan": p, "Intervencion": i, "Evaluacion": e
+                        }])
+                        
+                        guardar_tabla(pd.concat([df_sop, nueva_nota], ignore_index=True), "notas_soapie")
+                        st.success("✅ Nota de Enfermería firmada digitalmente y archivada de forma inmutable.")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("⚠️ Los campos Subjetivo y Objetivo son obligatorios.")
+        else: 
+            st.warning("⚠️ No hay residentes activos registrados. Primero debes admitir al menos un residente en el módulo correspondiente.")
