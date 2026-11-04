@@ -51,6 +51,7 @@ CSS = """
 [data-testid="stSidebar"] *{color:#E6EDF7}
 .sb-brand{font-family:'Fraunces',serif;font-size:1.45rem;font-weight:700;color:#fff;margin:.2rem 0 .9rem}
 .sb-user{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);border-radius:14px;padding:10px 14px;margin-bottom:1rem}
+.sb-tenant{color:#9FB3CC;font-size:.82rem;font-weight:600;margin:-.6rem 0 .9rem}
 .sb-alias{font-weight:800;color:#fff}.sb-rol{font-size:.8rem;color:#C9A227;font-weight:700}
 [data-testid="stSidebar"] button[kind="secondary"],[data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"]{
  background:rgba(255,255,255,.06)!important;border:1px solid rgba(255,255,255,.12)!important;color:#fff!important;
@@ -215,73 +216,197 @@ def tabla(df, **kw):
 
 
 # ══════════════════════════════════════════════════════════════
-# SESIÓN Y LOGIN
+# SESIÓN Y LOGIN (multi-geriátrico)
 # ══════════════════════════════════════════════════════════════
-for _k, _v in {"auth": False, "usuario": "", "rol": "", "alias": "", "reg": "", "pagina": "Hub",
-               "intentos": 0, "bloqueo": 0.0}.items():
+import time
+
+for _k, _v in {"auth": False, "usuario": "", "rol": "", "alias": "", "reg": "", "pagina": "Hub", "tenant": "",
+               "forzar_clave": False, "intentos": 0, "bloqueo": 0.0}.items():
     st.session_state.setdefault(_k, _v)
-for _f in ("adm", "edit", "vit", "med", "adm_med", "susp", "esc", "soap", "usr", "pw"):
+for _f in ("adm", "edit", "vit", "med", "adm_med", "susp", "esc", "soap", "usr", "pw",
+           "cli_pago", "cli_ed", "cli_new", "cli_pw", "cli_estado", "cli_vault"):
     st.session_state.setdefault(f"f_{_f}", 0)
 
-N.conectar(_cfg())
+N.usar_tenant(None)   # cada recarga empieza sin geriátrico; solo se fija tras validar la sesión
+N.conectar(_cfg())    # hoja de CONTROL del propietario
+
+
+def _ocultar_sidebar():
+    st.markdown("<style>[data-testid='stSidebar'],[data-testid='stSidebarCollapsedControl'],"
+                "[data-testid='collapsedControl']{display:none!important}</style>", unsafe_allow_html=True)
+
+
+def _cerrar_sesion(aviso=None):
+    st.session_state.update(auth=False, usuario="", rol="", alias="", reg="", tenant="", forzar_clave=False, pagina="Hub")
+    if aviso:
+        st.session_state["_aviso_login"] = aviso
+    st.rerun()
+
+
+def _frenar():
+    if time.time() < st.session_state.bloqueo:
+        st.error("Demasiados intentos. Espere un minuto e intente de nuevo.")
+        return True
+    return False
+
+
+def _fallo():
+    st.session_state.intentos += 1
+    if st.session_state.intentos >= 5:
+        st.session_state.bloqueo = time.time() + 60
+        st.session_state.intentos = 0
+
+
+def _login_cliente():
+    cfg = _cfg()
+    if N.hay_credenciales(cfg) and not N.estado_control()["conectado"]:
+        st.error("No hay conexión con la bóveda de datos en este momento. Intente de nuevo en un minuto.")
+        if st.button("🔄 Reintentar", key="reint_login", **KW):
+            N.conectar(cfg, forzar=True)
+            st.rerun()
+        return
+    with st.form("login_cli"):
+        cod = st.text_input("Código del geriátrico", placeholder="GER-XXXXXX")
+        u = st.text_input("Usuario")
+        p = st.text_input("Contraseña", type="password")
+        ok = st.form_submit_button("Iniciar sesión", type="primary", **KW)
+    if not ok or _frenar():
+        return
+    try:
+        cli = N.buscar_cliente(cod)
+        if cli is None:
+            _fallo()
+            st.error("Código, usuario o contraseña incorrectos.")
+            return
+        acceso, motivo, _ = N.estado_servicio(cli)
+        if not acceso:
+            st.error(f"⛔ {motivo} Comuníquese con su proveedor para reactivar el servicio.")
+            return
+        if not N.abrir_tenant(cfg, cli):
+            st.error("No se pudo abrir la bóveda de este geriátrico. Intente de nuevo o avise a su proveedor.")
+            return
+        N.usar_tenant(cli["Codigo"])
+        r = N.autenticar(u, p)
+        if r is None:
+            N.log(u or "?", "LOGIN_FALLIDO")
+            _fallo()
+            st.error("Código, usuario o contraseña incorrectos.")
+            return
+        st.session_state.update(auth=True, tenant=cli["Codigo"], usuario=r["Usuario"], rol=r["Rol"],
+                                alias=r["Alias"] or r["Usuario"], reg=r["Reg_Profesional"], pagina="Hub", intentos=0,
+                                forzar_clave=str(r.get("Cambiar_Clave", "")).upper() == "SI")
+        N.log(r["Usuario"], "LOGIN")
+    except N.ErrorNube as e:
+        st.error(f"Problema con la bóveda de datos: {e}")
+        return
+    st.rerun()
+
+
+def _login_owner():
+    cfg = _cfg()
+    if not N.owner_configurado(cfg):
+        if N.hay_credenciales(cfg):
+            st.warning("El acceso de propietario no está configurado. Defina `owner_password` en Secrets.")
+            return
+        st.info("🧪 Modo demostración local · usuario `owner` · contraseña `owner123`")
+    with st.form("login_owner"):
+        u = st.text_input("Usuario propietario")
+        p = st.text_input("Contraseña", type="password")
+        ok = st.form_submit_button("Entrar al panel", type="primary", **KW)
+    if not ok or _frenar():
+        return
+    if N.verificar_owner(cfg, u, p):
+        st.session_state.update(auth=True, tenant="", usuario=u.strip().lower(), rol="Propietario", alias="Propietario",
+                                reg="", pagina="OwnerHub", intentos=0, forzar_clave=False)
+        N.log_control(u.strip().lower(), "LOGIN_PROPIETARIO")
+        st.rerun()
+    _fallo()
+    st.error("Credenciales incorrectas.")
 
 
 def pantalla_login():
-    st.markdown("<style>[data-testid='stSidebar'],[data-testid='stSidebarCollapsedControl'],"
-                "[data-testid='collapsedControl']{display:none!important}</style>", unsafe_allow_html=True)
+    _ocultar_sidebar()
     _, c, _ = st.columns([1, 1.15, 1])
     with c:
         st.markdown("<div class='login-logo'>🏥</div><h1 style='text-align:center'>Geriatría OS</h1>"
                     "<p class='login-sub'>Suite clínica gerontológica · Notas SOAPIE</p>", unsafe_allow_html=True)
-        try:
-            N.asegurar_admin(_cfg())
-        except N.ErrorNube as e:
-            st.error(f"No se pudo leer la base de datos en Google Drive.\n\n{e}")
-            if st.button("🔄 Reintentar", **KW):
-                N.conectar(_cfg(), forzar=True)
-                st.rerun()
-            return
-        with st.form("login"):
-            u = st.text_input("Usuario", placeholder="Ej: admin")
-            p = st.text_input("Contraseña", type="password")
-            ok = st.form_submit_button("Iniciar sesión", type="primary", **KW)
-        if ok:
-            import time
-            if time.time() < st.session_state.bloqueo:
-                st.error("Demasiados intentos. Espere un minuto e intente de nuevo.")
-                return
-            r = N.autenticar(u, p)
-            if r:
-                st.session_state.update(auth=True, usuario=r["Usuario"], rol=r["Rol"], alias=r["Alias"] or r["Usuario"],
-                                        reg=r["Reg_Profesional"], pagina="Hub", intentos=0)
-                N.log(r["Usuario"], "LOGIN")
-                st.rerun()
-            else:
-                st.session_state.intentos += 1
-                if st.session_state.intentos >= 5:
-                    st.session_state.bloqueo = time.time() + 60
-                    st.session_state.intentos = 0
-                N.log(u or "?", "LOGIN_FALLIDO")
-                st.error("Usuario o contraseña incorrectos.")
-        if not N.estado_nube()["conectado"]:
-            st.caption("☁️ Modo local: sin conexión a Google Drive (el administrador puede ver el motivo en Administración ▸ Sistema).")
+        aviso = st.session_state.pop("_aviso_login", None)
+        if aviso:
+            st.error(aviso)
+        t1, t2 = st.tabs(["🏥 Mi geriátrico", "🔑 Propietario"])
+        with t1:
+            _login_cliente()
+        with t2:
+            _login_owner()
 
 
 if not st.session_state.auth:
     pantalla_login()
     st.stop()
 
+ES_OWNER = st.session_state.rol == "Propietario"
+CLI = None
+if not ES_OWNER:
+    # En CADA recarga: el geriátrico debe seguir existiendo y con servicio vigente (si no paga, se corta el acceso)
+    try:
+        CLI = N.buscar_cliente(st.session_state.tenant)
+        _ok, _motivo, _dias = N.estado_servicio(CLI) if CLI else (False, "Cuenta no encontrada.", None)
+        if not _ok:
+            _cerrar_sesion(f"⛔ {_motivo} Comuníquese con su proveedor para reactivar el servicio.")
+        if not N.abrir_tenant(_cfg(), CLI):
+            st.error("No se pudo abrir la bóveda de datos de este geriátrico. Intente de nuevo en unos segundos.")
+            st.stop()
+        N.usar_tenant(CLI["Codigo"])
+    except N.ErrorNube as e:
+        st.error(f"⚠️ Problema con la bóveda de datos: {e}")
+        st.stop()
+
+
+def pantalla_cambio_clave():
+    _ocultar_sidebar()
+    _, c, _ = st.columns([1, 1.15, 1])
+    with c:
+        st.markdown("<div class='login-logo'>🔐</div><h2 style='text-align:center'>Cree su contraseña personal</h2>"
+                    "<p class='login-sub'>Por seguridad debe cambiar la clave temporal antes de continuar.</p>", unsafe_allow_html=True)
+        with st.form("form_pw_forzado"):
+            n1 = st.text_input("Nueva contraseña (mínimo 8 caracteres)", type="password")
+            n2 = st.text_input("Repetir contraseña", type="password")
+            ok = st.form_submit_button("Guardar y continuar", type="primary", **KW)
+        if ok:
+            if len(n1) < 8 or n1 != n2:
+                st.error("La contraseña debe tener 8+ caracteres y coincidir en ambos campos.")
+            else:
+                N.actualizar("usuarios", "Usuario", st.session_state.usuario, {"Password": N.hash_pw(n1), "Cambiar_Clave": "NO"})
+                N.log(st.session_state.usuario, "CAMBIO_CLAVE")
+                st.session_state.forzar_clave = False
+                st.rerun()
+        if st.button("Cancelar y salir", key="salir_forzado", **KW):
+            _cerrar_sesion()
+
+
+if st.session_state.forzar_clave and not ES_OWNER:
+    pantalla_cambio_clave()
+    st.stop()
+
 # ══════════════════════════════════════════════════════════════
 # BARRA LATERAL
 # ══════════════════════════════════════════════════════════════
-PAGINAS = [("Hub", "🏠", "Centro de mando"), ("Residentes", "👴", "Residentes"), ("Vitales", "🩺", "Signos vitales"),
-           ("Kardex", "💊", "Kardex de medicamentos"), ("Escalas", "📊", "Escalas geriátricas"),
-           ("SOAPIE", "📝", "Notas SOAPIE")]
-if st.session_state.rol == "Administrador":
-    PAGINAS.append(("Admin", "⚙️", "Administración"))
+if ES_OWNER:
+    PAGINAS = [("OwnerHub", "📈", "Resumen"), ("Clientes", "🏢", "Clientes"), ("NuevoCliente", "➕", "Nuevo cliente"),
+               ("Pagos", "💳", "Pagos"), ("OwnerSistema", "🛠", "Sistema")]
+    MARCA = "Panel del propietario"
+else:
+    PAGINAS = [("Hub", "🏠", "Centro de mando"), ("Residentes", "👴", "Residentes"), ("Vitales", "🩺", "Signos vitales"),
+               ("Kardex", "💊", "Kardex de medicamentos"), ("Escalas", "📊", "Escalas geriátricas"),
+               ("SOAPIE", "📝", "Notas SOAPIE")]
+    if st.session_state.rol == "Administrador":
+        PAGINAS.append(("Admin", "⚙️", "Administración"))
+    MARCA = CLI["Nombre"]
+if st.session_state.pagina not in [p[0] for p in PAGINAS]:
+    st.session_state.pagina = PAGINAS[0][0]
 
 with st.sidebar:
-    st.markdown(bloque(f"""<div class="sb-brand">🏥 Geriatría OS</div><div class="sb-user">
+    st.markdown(bloque(f"""<div class="sb-brand">🏥 Geriatría OS</div><div class="sb-tenant">{h(MARCA)}</div><div class="sb-user">
         <div class="sb-alias">{h(st.session_state.alias)}</div><div class="sb-rol">{h(st.session_state.rol)}</div></div>"""),
                 unsafe_allow_html=True)
     for clave, icono, nombre in PAGINAS:
@@ -290,20 +415,19 @@ with st.sidebar:
             st.session_state.pagina = clave
             st.rerun()
     st.markdown("---")
-    _e = N.estado_nube()
-    st.markdown(chip("☁️ Drive conectado", "ok") if _e["conectado"] else chip("💾 Modo local (sin Drive)", "crit"),
+    _e = N.estado_control() if ES_OWNER else N.estado_nube()
+    st.markdown(chip("☁️ Bóveda conectada", "ok") if _e["conectado"] else chip("💾 Modo demostración local", "crit"),
                 unsafe_allow_html=True)
-    if _e["conectado"] and _e["carpeta_url"]:
-        st.markdown(f"[📁 Abrir carpeta en Drive]({_e['carpeta_url']})")
     if st.button("🚪  Cerrar sesión", key="nav_salir", **KW):
-        N.log(st.session_state.usuario, "LOGOUT")
-        st.session_state.update(auth=False, usuario="", rol="", alias="", reg="")
-        st.rerun()
+        if ES_OWNER:
+            N.log_control(st.session_state.usuario, "LOGOUT_PROPIETARIO")
+        else:
+            N.log(st.session_state.usuario, "LOGOUT")
+        _cerrar_sesion()
 
 mostrar_flash()
-if not N.estado_nube()["conectado"]:
-    st.warning("☁️ **Sin conexión a Google Drive.** Los datos se guardan solo en este servidor y pueden perderse al reiniciar "
-               "la app. " + ("Revise **Administración ▸ Sistema**." if st.session_state.rol == "Administrador" else "Avise al administrador."))
+if not ES_OWNER and not N.estado_nube()["conectado"]:
+    st.warning("💾 **Modo demostración local.** Los datos se guardan solo en este servidor y pueden perderse al reiniciar la app.")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -311,8 +435,11 @@ if not N.estado_nube()["conectado"]:
 # ══════════════════════════════════════════════════════════════
 def pagina_hub():
     titulo("Centro de mando", f"{N.hoy().strftime('%d/%m/%Y')} · panel general de supervisión gerontológica")
-    if st.session_state.usuario == "admin" and N.admin_con_clave_default():
-        st.error("🔐 El usuario **admin** todavía usa la clave por defecto. Cámbiela abajo, en «Cambiar mi contraseña».")
+    if st.session_state.rol == "Administrador" and CLI:
+        _o, _m, _d = N.estado_servicio(CLI)
+        if _d is not None and _d <= 7:
+            st.warning("💳 Su suscripción " + (f"vence en {_d} días" if _d >= 0 else "está en periodo de gracia") +
+                       ". Contacte a su proveedor para renovar y evitar la suspensión del servicio.")
 
     res = N.leer("residentes")
     act = res[res["Estado"] != "Egresado"]
@@ -372,7 +499,7 @@ def pagina_hub():
                 elif len(nueva) < 6 or nueva != conf:
                     st.error("La nueva contraseña debe tener 6+ caracteres y coincidir en ambos campos.")
                 else:
-                    N.actualizar("usuarios", "Usuario", st.session_state.usuario, {"Password": N.hash_pw(nueva)})
+                    N.actualizar("usuarios", "Usuario", st.session_state.usuario, {"Password": N.hash_pw(nueva), "Cambiar_Clave": "NO"})
                     N.log(st.session_state.usuario, "CAMBIO_CLAVE")
                     flash("ok", "✅ Contraseña actualizada.")
                     nueva_version("pw")
@@ -753,13 +880,18 @@ def pagina_soapie():
 
 
 # ══════════════════════════════════════════════════════════════
-# ADMINISTRACIÓN
+# ADMINISTRACIÓN DEL GERIÁTRICO
 # ══════════════════════════════════════════════════════════════
 def pagina_admin():
-    titulo("Administración", "Usuarios, auditoría y estado del sistema.")
-    t1, t2, t3 = st.tabs(["👥 Usuarios", "🧾 Auditoría", "🛠 Sistema"])
+    titulo("Administración", "Usuarios de su geriátrico, auditoría y copia de seguridad.")
+    t1, t2, t3 = st.tabs(["👥 Usuarios", "🧾 Auditoría", "🛠 Sistema y respaldo"])
+    mx = int(N._num(CLI["Max_Usuarios"])) if CLI else 0
     with t1:
         usr = N.leer("usuarios")
+        activos = int((usr["Activo"].str.upper() != "NO").sum())
+        lleno = bool(mx) and activos >= mx
+        st.markdown(chip(f"Usuarios activos: {activos}" + (f" de {mx} permitidos por su plan" if mx else ""),
+                         "warn" if lleno else "ok"), unsafe_allow_html=True)
         tabla(usr.drop(columns=["Password"]))
         v = st.session_state.f_usr
         a, b = st.columns(2)
@@ -770,16 +902,19 @@ def pagina_admin():
                 al = st.text_input("Nombre o alias que se mostrará", key=f"u_a_{v}")
                 rol = st.selectbox("Rol", ROLES, key=f"u_r_{v}")
                 reg = st.text_input("Registro profesional (opcional)", key=f"u_g_{v}")
-                pw = st.text_input("Contraseña inicial (mínimo 6)", type="password", key=f"u_p_{v}")
+                pw = st.text_input("Contraseña temporal (mínimo 6)", type="password", key=f"u_p_{v}")
+                st.caption("La persona deberá cambiarla en su primer ingreso.")
                 if st.form_submit_button("Crear usuario", type="primary", **KW):
                     ul = u.strip().lower()
-                    if not ul or " " in ul or len(pw) < 6 or not al.strip():
+                    if lleno:
+                        st.error(f"Su plan permite {mx} usuarios activos. Desactive uno o solicite ampliar su plan.")
+                    elif not ul or " " in ul or len(pw) < 6 or not al.strip():
                         st.error("Complete usuario (sin espacios), alias y una contraseña de 6+ caracteres.")
                     elif ul in usr["Usuario"].str.lower().values:
                         st.error("Ese usuario ya existe.")
                     else:
                         N.agregar("usuarios", {"Usuario": ul, "Password": N.hash_pw(pw), "Rol": rol, "Alias": al.strip(),
-                                               "Reg_Profesional": reg.strip(), "Activo": "SI"})
+                                               "Reg_Profesional": reg.strip(), "Activo": "SI", "Cambiar_Clave": "SI"})
                         N.log(st.session_state.usuario, "CREA_USUARIO", ul)
                         flash("ok", f"✅ Usuario {ul} creado.")
                         nueva_version("usr")
@@ -788,17 +923,20 @@ def pagina_admin():
             with st.form(f"form_usr2_{v}"):
                 st.markdown("##### 🔧 Modificar usuario")
                 sel = st.selectbox("Usuario", usr["Usuario"].tolist(), key=f"m_u_{v}")
-                nuevo_pw = st.text_input("Nueva contraseña (dejar vacío para no cambiarla)", type="password", key=f"m_p_{v}")
+                nuevo_pw = st.text_input("Nueva contraseña temporal (vacío = no cambiar)", type="password", key=f"m_p_{v}")
                 estado = st.radio("Estado", ["Activo", "Inactivo"], horizontal=True, key=f"m_e_{v}")
                 if st.form_submit_button("Aplicar cambios", **KW):
+                    inactivo_hoy = usr[usr["Usuario"] == sel]["Activo"].str.upper().eq("NO").any()
                     if sel == st.session_state.usuario and estado == "Inactivo":
                         st.error("No puede desactivar su propio usuario.")
+                    elif estado == "Activo" and inactivo_hoy and lleno:
+                        st.error(f"Su plan permite {mx} usuarios activos. Desactive otro antes de reactivar este.")
                     elif nuevo_pw and len(nuevo_pw) < 6:
                         st.error("La contraseña debe tener 6+ caracteres.")
                     else:
                         cambios = {"Activo": "SI" if estado == "Activo" else "NO"}
                         if nuevo_pw:
-                            cambios["Password"] = N.hash_pw(nuevo_pw)
+                            cambios.update(Password=N.hash_pw(nuevo_pw), Cambiar_Clave="SI")
                         N.actualizar("usuarios", "Usuario", sel, cambios)
                         N.log(st.session_state.usuario, "MODIFICA_USUARIO", f"{sel} · {estado}")
                         flash("ok", f"✅ Usuario {sel} actualizado.")
@@ -812,39 +950,330 @@ def pagina_admin():
         tabla(lg.head(300))
         st.download_button("⬇️ Descargar auditoría (CSV)", lg.to_csv(index=False).encode("utf-8-sig"), file_name="auditoria.csv", mime="text/csv")
     with t3:
-        e = N.estado_nube()
-        if e["conectado"]:
-            st.success("✅ Conectado a Google Drive")
-            st.markdown(f"[📁 Abrir carpeta **{N.NOMBRE_CARPETA}**]({e['carpeta_url']}) · [📄 Abrir base de datos]({e['libro_url']})")
-            st.markdown("##### Filas por tabla")
-            tabla(pd.DataFrame(list(N.resumen_tablas().items()), columns=["Tabla", "Filas"]))
+        if N.estado_nube()["conectado"]:
+            st.success("✅ Su información se guarda en una bóveda exclusiva de su geriátrico. Ningún otro geriátrico puede verla.")
         else:
-            st.error("❌ Sin conexión a Google Drive. Los datos se están guardando solo en este servidor.")
-            st.markdown("**Motivo reportado por Google:**")
+            st.info("Modo de demostración local.")
+        if CLI:
+            vence = CLI["Vence"] or "sin vencimiento"
+            st.markdown(f"**Plan:** {h(CLI['Plan'] or '—')} · **Usuarios permitidos:** {mx or '—'} · **Vigente hasta:** {h(vence)}")
+        st.markdown("##### 💾 Copia de seguridad (CSV)")
+        st.caption("Descargue sus datos cuando quiera: son suyos.")
+        cols = st.columns(3)
+        for i, t in enumerate([t for t in N.ESQUEMA if t != "usuarios"]):
+            cols[i % 3].download_button(f"⬇️ {t}", N.leer(t).to_csv(index=False).encode("utf-8-sig"),
+                                        file_name=f"{t}.csv", mime="text/csv", key=f"bk_{t}")
+
+
+# ══════════════════════════════════════════════════════════════
+# PANEL DEL PROPIETARIO
+# ══════════════════════════════════════════════════════════════
+def _wa(tel):
+    d = "".join(ch for ch in str(tel) if ch.isdigit())
+    return f"https://wa.me/{d if len(d) > 10 else '57' + d}" if d else ""
+
+
+def pagina_owner_hub():
+    titulo("Panel del propietario", "Suscripciones, clientes e ingresos. Aquí nunca se muestran datos clínicos.")
+    regs = N.leer("clientes").to_dict("records")
+    con = [r for r in regs if N.estado_servicio(r)[0]]
+    sin = [r for r in regs if not N.estado_servicio(r)[0]]
+    por_vencer = [r for r in con if N.estado_servicio(r)[2] is not None and N.estado_servicio(r)[2] <= 7]
+    mrr = sum(N._num(r["Precio_Mensual"]) for r in con)
+    pg = N.leer("pagos")
+    mes = pg[pg["Fecha"].str.startswith(N.hoy().strftime("%Y-%m"))]
+    cobrado = sum(N._num(x) for x in mes["Monto"])
+    c = st.columns(6)
+    c[0].markdown(kpi(len(regs), "Geriátricos registrados"), unsafe_allow_html=True)
+    c[1].markdown(kpi(len(con), "Con acceso activo"), unsafe_allow_html=True)
+    c[2].markdown(kpi(len(sin), "Sin acceso", "crit" if sin else ""), unsafe_allow_html=True)
+    c[3].markdown(kpi(len(por_vencer), "Vencen en 7 días", "warn" if por_vencer else ""), unsafe_allow_html=True)
+    c[4].markdown(kpi(N.cop(mrr), "Ingreso mensual esperado"), unsafe_allow_html=True)
+    c[5].markdown(kpi(N.cop(cobrado), "Cobrado este mes"), unsafe_allow_html=True)
+    if not regs:
+        st.info("Aún no hay geriátricos. Cree el primero en **Nuevo cliente**.")
+        return
+    st.markdown("##### 🏢 Todos los geriátricos")
+    tabla(pd.DataFrame([{"Geriátrico": r["Nombre"], "Código": r["Codigo"], "Plan": r["Plan"], "Usuarios": r["Max_Usuarios"],
+                         "Mensualidad": N.cop(r["Precio_Mensual"]), "Estado": N.etiqueta_servicio(r)[0], "Vence": r["Vence"]}
+                        for r in regs]))
+    cobrar = [r for r in regs if r in por_vencer or r in sin]
+    if cobrar:
+        st.markdown("##### 📞 Cobranza")
+        for r in cobrar:
+            t, n = N.etiqueta_servicio(r)
+            w = _wa(r["Telefono"])
+            st.markdown(f"{chip(t, n)} **{h(r['Nombre'])}** · {N.cop(r['Precio_Mensual'])}" +
+                        (f" · [💬 WhatsApp]({w})" if w else ""), unsafe_allow_html=True)
+
+
+def pagina_clientes():
+    titulo("Clientes", "Estado, pagos, plan y accesos de cada geriátrico.")
+    cl = N.leer("clientes")
+    if cl.empty:
+        st.info("Aún no hay geriátricos. Cree el primero en **Nuevo cliente**.")
+        return
+    etq = {r.Codigo: f"{r.Nombre} · {r.Codigo}" for r in cl.itertuples()}
+    cod = st.selectbox("Geriátrico", list(etq), format_func=lambda c: etq[c], key="cli_sel")
+    cli = N.buscar_cliente(cod)
+    txt, niv = N.etiqueta_servicio(cli)
+    st.markdown(bloque(f"""<div class="ficha"><div class="avatar">🏢</div><div>
+        <div class="nom">{h(cli['Nombre'])} {chip(txt, niv)}</div>
+        <div class="sub2">Código <b>{h(cli['Codigo'])}</b> · Plan {h(cli['Plan'] or '—')} · {h(cli['Max_Usuarios'] or '—')} usuarios ·
+        {N.cop(cli['Precio_Mensual'])}/mes · Vence {h(cli['Vence'] or '—')}</div>
+        <div class="sub2">{h(cli['Contacto'])} {h(cli['Telefono'])} {h(cli['Email'])}</div></div>
+        <div class="der">{chip(cli['Modo_Boveda'] or 'Central', 'ok')}</div></div>"""), unsafe_allow_html=True)
+    actor = st.session_state.usuario
+    t1, t2, t3, t4 = st.tabs(["💳 Estado y pagos", "📝 Plan y datos", "👥 Accesos", "🗄 Bóveda"])
+
+    with t1:
+        v = st.session_state.f_cli_pago
+        with st.form(f"form_pago_{cod}_{v}"):
+            st.markdown("##### Registrar pago (extiende la vigencia y reactiva el acceso)")
+            a, b, c = st.columns(3)
+            monto = a.number_input("Monto (COP)", min_value=0.0, value=float(N._num(cli["Precio_Mensual"])), step=1000.0, key=f"p_m_{cod}_{v}")
+            meses = b.number_input("Meses que cubre", min_value=1, max_value=24, value=1, step=1, key=f"p_n_{cod}_{v}")
+            metodo = c.selectbox("Método", ["Transferencia", "Nequi", "Daviplata", "Efectivo", "Otro"], key=f"p_t_{cod}_{v}")
+            nota = st.text_input("Nota (opcional)", key=f"p_o_{cod}_{v}")
+            if st.form_submit_button("REGISTRAR PAGO", type="primary", **KW):
+                nueva = N.registrar_pago(cod, monto, meses, metodo, nota, actor)
+                flash("ok", f"✅ Pago registrado. {cli['Nombre']} tiene acceso hasta el {nueva.strftime('%d/%m/%Y')}.")
+                nueva_version("cli_pago")
+                st.rerun()
+        v2 = st.session_state.f_cli_estado
+        with st.form(f"form_estado_{cod}_{v2}"):
+            if cli["Estado"] == "Activo":
+                st.markdown("##### ⛔ Suspender acceso (inmediato, incluso para quienes ya están dentro)")
+                motivo = st.text_input("Motivo (ej: falta de pago)", key=f"s_m_{cod}_{v2}")
+                if st.form_submit_button("Suspender ahora", **KW):
+                    N.actualizar("clientes", "Codigo", cod, {"Estado": "Suspendido", "Notas": (cli["Notas"] + " | " if cli["Notas"] else "") + f"{N.hoy()} suspendido: {motivo}"})
+                    N.log_control(actor, "SUSPENDE", f"{cod} · {motivo}")
+                    flash("warn", f"⛔ {cli['Nombre']} fue suspendido.")
+                    nueva_version("cli_estado")
+                    st.rerun()
+            else:
+                st.markdown("##### ✅ Reactivar acceso")
+                st.caption("Si el vencimiento ya pasó, registre un pago o extienda la fecha en «Plan y datos».")
+                if st.form_submit_button("Reactivar", type="primary", **KW):
+                    N.actualizar("clientes", "Codigo", cod, {"Estado": "Activo"})
+                    N.log_control(actor, "REACTIVA", cod)
+                    flash("ok", f"✅ {cli['Nombre']} fue reactivado.")
+                    nueva_version("cli_estado")
+                    st.rerun()
+        pg = N.leer("pagos")
+        pg = pg[pg["Codigo"] == cod].sort_values("Fecha", ascending=False)
+        st.markdown("##### Historial de pagos")
+        if pg.empty:
+            st.caption("Sin pagos registrados.")
+        else:
+            tabla(pg[["Fecha", "Monto", "Metodo", "Periodo", "Nota"]])
+
+    with t2:
+        v = st.session_state.f_cli_ed
+        with st.form(f"form_cli_ed_{cod}_{v}"):
+            a, b, c = st.columns(3)
+            nom = a.text_input("Nombre del geriátrico", cli["Nombre"], key=f"c_n_{cod}_{v}")
+            nit = b.text_input("NIT", cli["NIT"], key=f"c_nit_{cod}_{v}")
+            plan = c.selectbox("Plan", ["Básico", "Estándar", "Pro", "Personalizado"],
+                               index=["Básico", "Estándar", "Pro", "Personalizado"].index(cli["Plan"]) if cli["Plan"] in ("Básico", "Estándar", "Pro", "Personalizado") else 0,
+                               key=f"c_pl_{cod}_{v}")
+            a, b, c = st.columns(3)
+            con_ = a.text_input("Contacto", cli["Contacto"], key=f"c_c_{cod}_{v}")
+            tel = b.text_input("Teléfono / WhatsApp", cli["Telefono"], key=f"c_t_{cod}_{v}")
+            mail = c.text_input("Email", cli["Email"], key=f"c_e_{cod}_{v}")
+            a, b, c = st.columns(3)
+            mxu = a.number_input("Máximo de usuarios activos", min_value=1, max_value=1000, value=max(1, int(N._num(cli["Max_Usuarios"], 5))), step=1, key=f"c_mx_{cod}_{v}")
+            precio = b.number_input("Mensualidad (COP)", min_value=0.0, value=float(N._num(cli["Precio_Mensual"])), step=1000.0, key=f"c_pr_{cod}_{v}")
+            gr = c.number_input("Días de gracia", min_value=0, max_value=60, value=int(N._num(cli["Dias_Gracia"])), step=1, key=f"c_g_{cod}_{v}")
+            a, b = st.columns(2)
+            sin_v = a.checkbox("Sin fecha de vencimiento", value=not cli["Vence"], key=f"c_sv_{cod}_{v}")
+            vence = b.date_input("Vigente hasta", value=N.parsear_fecha(cli["Vence"]) or N.hoy(), key=f"c_v_{cod}_{v}")
+            if st.form_submit_button("Guardar cambios", type="primary", **KW):
+                if not nom.strip():
+                    st.error("El nombre es obligatorio.")
+                else:
+                    N.actualizar("clientes", "Codigo", cod, {"Nombre": nom.strip(), "NIT": nit.strip(), "Plan": plan, "Contacto": con_.strip(),
+                                                             "Telefono": tel.strip(), "Email": mail.strip(), "Max_Usuarios": mxu, "Precio_Mensual": precio,
+                                                             "Dias_Gracia": gr, "Vence": "" if sin_v else vence.isoformat()})
+                    N.log_control(actor, "EDITA_CLIENTE", cod)
+                    flash("ok", "✅ Datos del cliente actualizados.")
+                    nueva_version("cli_ed")
+                    st.rerun()
+
+    with t3:
+        st.caption("Como propietario usted ve solo los usuarios del geriátrico. Los datos clínicos no se muestran en este panel.")
+        if not N.abrir_tenant(_cfg(), cli):
+            st.error("No se pudo abrir la bóveda de este cliente.")
+            st.code(N.estado_nube(cod)["error"] or "")
+        else:
+            usr = N.leer("usuarios", tid=cod)
+            tabla(usr.drop(columns=["Password"]))
+            v = st.session_state.f_cli_pw
+            with st.form(f"form_cli_pw_{cod}_{v}"):
+                st.markdown("##### 🔑 Restablecer clave de un usuario del cliente")
+                sel = st.selectbox("Usuario", usr["Usuario"].tolist(), key=f"r_u_{cod}_{v}")
+                pw = st.text_input("Clave temporal", value=N.clave_temporal(), key=f"r_p_{cod}_{v}")
+                st.caption("Se le pedirá cambiarla al ingresar. Entréguesela al cliente por un canal seguro.")
+                if st.form_submit_button("Restablecer", **KW):
+                    if len(pw) < 6:
+                        st.error("Mínimo 6 caracteres.")
+                    else:
+                        N.actualizar("usuarios", "Usuario", sel, {"Password": N.hash_pw(pw), "Cambiar_Clave": "SI", "Activo": "SI"}, tid=cod)
+                        N.log_control(actor, "RESET_CLAVE_CLIENTE", f"{cod} · {sel}")
+                        flash("ok", f"✅ Clave de {sel} restablecida. Clave temporal: {pw}")
+                        nueva_version("cli_pw")
+                        st.rerun()
+
+    with t4:
+        st.markdown(f"**Modo:** {h(cli['Modo_Boveda'] or 'Central')}")
+        if cli["Carpeta_URL"]:
+            st.markdown(f"[📁 Abrir carpeta del cliente en Drive]({cli['Carpeta_URL']})")
+        if cli["Sheet_ID"]:
+            st.markdown(f"[📄 Abrir base de datos](https://docs.google.com/spreadsheets/d/{cli['Sheet_ID']})")
+            st.caption("Abrir la hoja es solo para soporte técnico: contiene datos clínicos del cliente.")
+        if st.button("🔌 Probar conexión con la bóveda", key=f"probar_{cod}"):
+            if N.abrir_tenant(_cfg(), cli, forzar=True):
+                st.success("✅ La bóveda responde correctamente.")
+            else:
+                st.error("No se pudo conectar:")
+                st.code(N.estado_nube(cod)["error"] or "")
+        v = st.session_state.f_cli_vault
+        with st.form(f"form_vault_{cod}_{v}"):
+            nuevo = st.text_input("Cambiar ID de la hoja (bóveda propia del cliente)", cli["Sheet_ID"], key=f"v_s_{cod}_{v}")
+            st.caption("La hoja debe estar compartida como Editor con la cuenta de servicio. No mueve datos: solo cambia a dónde apunta.")
+            if st.form_submit_button("Guardar ID", **KW):
+                N.actualizar("clientes", "Codigo", cod, {"Sheet_ID": nuevo.strip(), "Modo_Boveda": "Propia del cliente" if nuevo.strip() != cli["Sheet_ID"] else cli["Modo_Boveda"]})
+                N.log_control(actor, "CAMBIA_BOVEDA", cod)
+                flash("ok", "✅ Bóveda actualizada.")
+                nueva_version("cli_vault")
+                st.rerun()
+
+
+def pagina_nuevo_cliente():
+    titulo("Nuevo cliente", "Cree un geriátrico: se genera su código, su bóveda propia y su primer administrador.")
+    ent = st.session_state.get("nuevo_cliente")
+    if ent:
+        st.success(f"✅ {ent['nombre']} fue creado. **Esta es la única vez que verá la contraseña temporal.**")
+        st.code(f"🏥 Geriatría OS — Acceso de {ent['nombre']}\nCódigo del geriátrico: {ent['codigo']}\nUsuario: {ent['usuario']}\n"
+                f"Contraseña temporal: {ent['clave']}\n(Deberá cambiarla en su primer ingreso)", language="text")
+        if st.button("Entendido, crear otro", key="ent_ok"):
+            st.session_state.pop("nuevo_cliente")
+            st.rerun()
+        return
+    v = st.session_state.f_cli_new
+    with st.form(f"form_nuevo_{v}"):
+        st.markdown("##### Datos del geriátrico")
+        a, b, c = st.columns(3)
+        nom = a.text_input("Nombre del geriátrico", key=f"n_n_{v}")
+        nit = b.text_input("NIT", key=f"n_nit_{v}")
+        plan = c.selectbox("Plan", ["Básico", "Estándar", "Pro", "Personalizado"], key=f"n_pl_{v}")
+        a, b, c = st.columns(3)
+        con_ = a.text_input("Persona de contacto", key=f"n_c_{v}")
+        tel = b.text_input("Teléfono / WhatsApp", key=f"n_t_{v}")
+        mail = c.text_input("Email", key=f"n_e_{v}")
+        st.markdown("##### Suscripción")
+        a, b, c, d = st.columns(4)
+        mxu = a.number_input("Máx. usuarios activos", min_value=1, max_value=1000, value=5, step=1, key=f"n_mx_{v}")
+        precio = b.number_input("Mensualidad (COP)", min_value=0.0, value=0.0, step=1000.0, key=f"n_pr_{v}")
+        vence = c.date_input("Vigente hasta", value=N.sumar_meses(N.hoy(), 1), key=f"n_v_{v}")
+        gr = d.number_input("Días de gracia", min_value=0, max_value=60, value=3, step=1, key=f"n_g_{v}")
+        st.markdown("##### Bóveda de datos")
+        modo = st.radio("¿Dónde se guardan sus datos?", ["Central", "Propia del cliente"], horizontal=True, key=f"n_m_{v}",
+                        help="Central: carpeta y hoja propias del cliente dentro de SU Drive (el propietario). Propia: el cliente crea una hoja en su Drive y la comparte con la cuenta de servicio.")
+        sid = st.text_input("ID de la hoja del cliente (solo modo «Propia del cliente»)", key=f"n_s_{v}")
+        st.markdown("##### Primer administrador del geriátrico")
+        a, b = st.columns(2)
+        au = a.text_input("Usuario", value="admin", key=f"n_au_{v}")
+        ap = b.text_input("Contraseña temporal", value=N.clave_temporal(), key=f"n_ap_{v}")
+        enviado = st.form_submit_button("CREAR GERIÁTRICO", type="primary", **KW)
+    if enviado:
+        au_l = au.strip().lower()
+        if not nom.strip() or not au_l or " " in au_l or len(ap) < 6:
+            st.error("Complete el nombre, un usuario sin espacios y una contraseña temporal de 6+ caracteres.")
+            return
+        datos = {"Nombre": nom.strip(), "NIT": nit.strip(), "Contacto": con_.strip(), "Telefono": tel.strip(), "Email": mail.strip(),
+                 "Plan": plan, "Max_Usuarios": mxu, "Precio_Mensual": precio, "Vence": vence.isoformat(), "Dias_Gracia": gr,
+                 "Modo_Boveda": modo, "Sheet_ID": sid.strip()}
+        codigo, error = None, None
+        try:
+            codigo = N.crear_cliente(_cfg(), datos, au_l, ap, st.session_state.usuario)
+        except Exception as e:  # incluye fallos de Drive al crear la bóveda
+            error = e
+        if error is not None:
+            st.error(f"No se pudo completar la creación: {error}")
+            return
+        st.session_state["nuevo_cliente"] = {"nombre": nom.strip(), "codigo": codigo, "usuario": au_l, "clave": ap}
+        nueva_version("cli_new")
+        st.rerun()
+
+
+def pagina_pagos():
+    titulo("Pagos", "Historial de cobros de todos los geriátricos.")
+    pg = N.leer("pagos").sort_values("Fecha", ascending=False)
+    if pg.empty:
+        st.info("Aún no hay pagos registrados. Se registran desde **Clientes ▸ Estado y pagos**.")
+        return
+    nombres = N.leer("clientes").set_index("Codigo")["Nombre"].to_dict()
+    pg = pg.assign(Geriatrico=pg["Codigo"].map(nombres).fillna("—"), Valor=pg["Monto"].map(N._num))
+    st.markdown(kpi(N.cop(pg["Valor"].sum()), "Total cobrado (histórico)"), unsafe_allow_html=True)
+    por_mes = pg.assign(Mes=pg["Fecha"].str[:7]).groupby("Mes")["Valor"].sum().sort_index()
+    if len(por_mes) >= 1:
+        st.markdown("##### Cobrado por mes (COP)")
+        st.bar_chart(por_mes)
+    tabla(pg[["Fecha", "Geriatrico", "Codigo", "Monto", "Metodo", "Periodo", "Nota", "Registrado_Por"]])
+    st.download_button("⬇️ Descargar pagos (CSV)", pg.drop(columns=["Valor"]).to_csv(index=False).encode("utf-8-sig"),
+                       file_name="pagos.csv", mime="text/csv")
+
+
+def pagina_owner_sistema():
+    titulo("Sistema", "Conexión con Google, configuración y auditoría del panel.")
+    t1, t2 = st.tabs(["🔌 Conexión", "🧾 Auditoría"])
+    with t1:
+        e = N.estado_control()
+        if e["conectado"]:
+            st.success(f"✅ Conectado a la hoja de control (modo {e['modo'] or 'demo'}).")
+            if e["libro_url"]:
+                st.markdown(f"[📄 Abrir hoja de control]({e['libro_url']})")
+        else:
+            st.error("❌ Sin conexión con Google. La app está en modo de demostración local.")
             st.code(e["error"] or "Aún no se ha intentado conectar.")
             st.markdown(
-                "- **invalid_grant / invalid_client**: el token o las credenciales son incorrectos; genere un token nuevo con `generar_token.py`.\n"
-                "- **403 / insufficient scopes**: el token se creó sin permiso de Drive; genérelo de nuevo con `generar_token.py`.\n"
-                "- **API has not been used / disabled**: active *Google Drive API* y *Google Sheets API* en Google Cloud Console.\n"
-                "- **Faltan valores en Secrets**: revise los nombres exactos en el ejemplo de abajo.")
+                "- **Falta la hoja OS_Control / 404**: créela en su Drive y compártala como Editor con el correo de la cuenta de servicio.\n"
+                "- **API has not been used / disabled**: active *Google Drive API* y *Google Sheets API*.\n"
+                "- **Sin espacio (storageQuota)**: la cuenta de servicio no puede crear archivos; use el modo «Propia del cliente» o cree las hojas a mano.")
         if st.button("🔄 Reintentar conexión", key="reconectar"):
             N.conectar(_cfg(), forzar=True)
             st.rerun()
         with st.expander("Ejemplo de Secrets (Streamlit Cloud ▸ Settings ▸ Secrets)"):
-            st.code('google_client_id = "XXXX.apps.googleusercontent.com"\n'
-                    'google_client_secret = "XXXX"\n'
-                    'google_refresh_token = "1//XXXX"\n'
-                    'admin_password = "una-clave-segura"   # opcional: clave inicial del usuario admin', language="toml")
+            st.code('owner_user = "tu-usuario"\n'
+                    'owner_password = "una-clave-larga-y-segura"      # o usa owner_password_hash\n'
+                    'google_folder_id = "ID de tu carpeta de Drive donde se crean las bóvedas"\n'
+                    '# control_sheet_id = "ID de la hoja OS_Control (opcional)"\n\n'
+                    '[gcp_service_account]\n'
+                    'type = "service_account"\n'
+                    'project_id = "geriatria-os"\n'
+                    'private_key = "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n"\n'
+                    'client_email = "geriatria@geriatria-os.iam.gserviceaccount.com"\n'
+                    'token_uri = "https://oauth2.googleapis.com/token"', language="toml")
+        with st.expander("Generar hash de contraseña (más seguro que dejarla en texto)"):
+            pw = st.text_input("Contraseña a convertir", type="password", key="gen_hash")
+            if pw:
+                st.code(f'owner_password_hash = "{N.hash_pw(pw)}"', language="toml")
+    with t2:
+        lg = N.leer("logs_control").sort_values("Fecha_Hora", ascending=False)
+        tabla(lg.head(300))
 
 
 # ══════════════════════════════════════════════════════════════
 # ENRUTADOR
 # ══════════════════════════════════════════════════════════════
 RUTAS = {"Hub": pagina_hub, "Residentes": pagina_residentes, "Vitales": pagina_vitales, "Kardex": pagina_kardex,
-         "Escalas": pagina_escalas, "SOAPIE": pagina_soapie, "Admin": pagina_admin}
+         "Escalas": pagina_escalas, "SOAPIE": pagina_soapie, "Admin": pagina_admin,
+         "OwnerHub": pagina_owner_hub, "Clientes": pagina_clientes, "NuevoCliente": pagina_nuevo_cliente,
+         "Pagos": pagina_pagos, "OwnerSistema": pagina_owner_sistema}
 
 try:
-    RUTAS.get(st.session_state.pagina, pagina_hub)()
+    RUTAS.get(st.session_state.pagina, PAGINAS[0][0] and RUTAS[PAGINAS[0][0]])()
 except N.ErrorNube as err:
-    st.error(f"⚠️ Problema con Google Drive: {err}")
+    st.error(f"⚠️ Problema con la bóveda de datos: {err}")
     st.caption("Sus datos no se perdieron. Espere unos segundos y vuelva a intentar la acción.")
