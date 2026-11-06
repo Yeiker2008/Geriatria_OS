@@ -311,13 +311,15 @@ def tiles(items, columnas=3):
 
 
 def capturar_foto(clave, etiqueta="Foto"):
-    """Foto con la cámara del celular o subida desde la galería. Devuelve bytes o None."""
-    t1, t2 = st.tabs(["📷 Tomar foto", "🖼 Elegir de la galería"])
-    with t1:
-        cam = st.camera_input(etiqueta, key=f"cam_{clave}", label_visibility="collapsed")
-    with t2:
-        up = st.file_uploader(etiqueta, type=["jpg", "jpeg", "png", "webp"], key=f"up_{clave}", label_visibility="collapsed")
-    src = cam or up
+    """Foto desde la galería (por defecto) o con la cámara. La cámara SOLO se enciende si la persona
+    toca «Tomar foto ahora»: así el navegador no pide permiso de cámara sin necesidad."""
+    modo = st.radio(etiqueta, ["🖼 Elegir de la galería", "📷 Tomar foto ahora"], horizontal=True,
+                    key=f"modo_foto_{clave}", label_visibility="collapsed")
+    if modo.startswith("📷"):
+        src = st.camera_input(etiqueta, key=f"cam_{clave}", label_visibility="collapsed")
+    else:
+        src = st.file_uploader(etiqueta, type=["jpg", "jpeg", "png", "webp"], key=f"up_{clave}", label_visibility="collapsed")
+        st.caption("En el celular, al tocar «Browse files» también puede elegir «Cámara».")
     return src.getvalue() if src else None
 
 
