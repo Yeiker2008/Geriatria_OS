@@ -10,6 +10,7 @@ No depende de Streamlit, así que se puede probar por separado.
 """
 import calendar
 import hashlib
+import json
 import hmac
 import os
 import re
@@ -82,25 +83,51 @@ def _num(x, defecto=0.0):
 ESQUEMA = {
     "residentes": ["Cedula", "Nombre", "Fecha_Nacimiento", "Sexo", "EPS", "Habitacion",
                    "Diagnosticos", "Alergias", "Acudiente_Nombre", "Acudiente_Tel",
-                   "Estado", "F_Ingreso", "F_Egreso", "Motivo_Egreso"],
+                   "Estado", "F_Ingreso", "F_Egreso", "Motivo_Egreso",
+                   "Mensualidad", "Pagado_Hasta"],
     "signos_vitales": ["ID", "Cedula", "Fecha_Hora", "TA_Sis", "TA_Dia", "FC", "FR", "Temp",
                        "SatO2", "Glucemia", "Dolor", "Peso", "Alertas", "Autor"],
     "notas_soapie": ["ID_Nota", "Cedula", "Fecha_Hora", "Turno", "Autor", "Subjetivo", "Objetivo",
-                     "Analisis", "Plan", "Intervencion", "Evaluacion", "Sello"],
+                     "Analisis", "Plan", "Intervencion", "Evaluacion", "Sello", "Hora_Inicio"],
     "kardex_meds": ["ID_Med", "Cedula", "Medicamento", "Dosis", "Via", "Frecuencia", "Horarios",
-                    "Indicaciones", "Estado", "Prescrito_Por", "F_Inicio", "F_Suspension"],
-    "admin_meds": ["ID", "ID_Med", "Cedula", "Fecha_Hora", "Resultado", "Observacion", "Autor"],
+                    "Indicaciones", "Estado", "Prescrito_Por", "F_Inicio", "F_Suspension", "Unidades_Dosis"],
+    "admin_meds": ["ID", "ID_Med", "Cedula", "Fecha_Hora", "Resultado", "Observacion", "Autor",
+                   "Hora_Programada", "Turno", "Minutos_Desvio"],
     "escalas": ["ID", "Cedula", "Fecha_Hora", "Escala", "Puntaje", "Interpretacion", "Detalle", "Autor"],
+    # --- Enfermería: inventarios por residente ---
+    "mov_meds": ["ID", "Cedula", "Medicamento", "Tipo", "Cantidad", "Fecha_Hora", "Autor", "Nota"],
+    "pertenencias": ["ID", "Cedula", "Fecha_Hora", "Tipo", "Descripcion", "Cantidad", "Estado",
+                     "Archivo_ID", "Autor"],
+    "aseo_personal": ["ID", "Cedula", "Fecha_Hora", "Articulo", "Tipo", "Cantidad", "Origen", "Autor", "Nota"],
+    "salidas": ["ID", "Cedula", "F_Salida", "Motivo", "Destino", "Acompanante", "Items_Salida",
+                "Autor_Salida", "Estado", "F_Retorno", "Items_Retorno", "Observacion_Retorno",
+                "Autor_Retorno", "Faltantes"],
+    # --- Cocina y Servicios generales (misma estructura, columna Seccion) ---
+    "inv_productos": ["Seccion", "Producto", "Unidad", "Minimo", "Consumo_Diario", "Activo"],
+    "inv_mov": ["ID", "Seccion", "Producto", "Tipo", "Cantidad", "Fecha_Hora", "Uso", "Dias_Estimados", "Autor"],
+    "tareas_aseo": ["ID", "Fecha_Hora", "Seccion", "Area", "Tipo", "Descripcion", "Productos", "Autor", "Rol"],
+    "indicaciones": ["ID", "Seccion", "Fecha_Hora", "Titulo", "Texto", "Autor", "Activa"],
+    # --- Familias ---
+    "pagos_familia": ["ID", "Cedula", "Fecha", "Monto", "Metodo", "Pagado_Hasta", "Dias_Atraso", "Autor"],
+    "comunicaciones": ["ID", "Cedula", "Fecha_Hora", "Tipo", "Canal", "Mensaje", "Autor"],
+    "plantillas_contrato": ["ID", "Nombre", "Archivo_ID", "Fecha_Hora", "Autor"],
+    "contratos": ["ID", "Cedula", "Plantilla", "Fecha_Hora", "Archivo_ID", "Autor"],
+    # --- Archivos (índice de todo lo que vive en la carpeta del geriátrico) ---
+    "archivos": ["ID", "Cedula", "Categoria", "Nombre", "Drive_ID", "Ruta_Local", "Fecha_Hora", "Autor", "Tamano"],
     "usuarios": ["Usuario", "Password", "Rol", "Alias", "Reg_Profesional", "Activo", "Cambiar_Clave"],
-    "logs": ["Fecha_Hora", "Usuario", "Accion", "Detalle"],
+    "logs": ["Fecha_Hora", "Usuario", "Accion", "Detalle", "Rol", "Pagina", "Tipo"],
 }
+
+# Tablas que NO se pueden modificar una vez escritas (ley: notas y registros clínicos inalterables)
+PROTEGIDAS = {"notas_soapie", "signos_vitales", "admin_meds", "escalas", "logs", "mov_meds",
+              "aseo_personal", "inv_mov", "pagos_familia", "comunicaciones"}
 
 # Tablas del PROPIETARIO (solo él las ve): clientes, pagos y auditoría de su panel
 ESQUEMA_CONTROL = {
     "clientes": ["Codigo", "Nombre", "NIT", "Contacto", "Telefono", "Email", "Plan", "Max_Usuarios",
                  "Precio_Mensual", "Estado", "Vence", "Dias_Gracia", "Modo_Boveda", "Sheet_ID",
-                 "Carpeta_URL", "Creado", "Notas"],
-    "pagos": ["ID", "Codigo", "Fecha", "Monto", "Metodo", "Periodo", "Nota", "Registrado_Por"],
+                 "Carpeta_URL", "Creado", "Notas", "Max_Residentes", "Modulos", "Roles_Permitidos"],
+    "pagos": ["ID", "Codigo", "Fecha", "Monto", "Metodo", "Periodo", "Nota", "Registrado_Por", "Dias_Atraso"],
     "logs_control": ["Fecha_Hora", "Actor", "Accion", "Detalle"],
 }
 
@@ -183,7 +210,7 @@ def _listar(drive, q):
 
 
 def _asegurar_carpeta(drive, nombre, padre=None):
-    q = f"name='{nombre}' and mimeType='{_MIME_CARPETA}' and trashed=false"
+    q = f"name='{nombre.replace(chr(92), chr(92) * 2).replace(chr(39), chr(92) + chr(39))}' and mimeType='{_MIME_CARPETA}' and trashed=false"
     if padre:
         q += f" and '{padre}' in parents"
     f = _listar(drive, q)
@@ -455,6 +482,8 @@ def agregar(nombre, fila, tid=None):
 def actualizar(nombre, col_clave, valor, cambios, tid=None):
     """Modifica campos de la fila cuya col_clave == valor."""
     tid, cols = _resolver(nombre, tid)
+    if nombre in PROTEGIDAS:
+        raise PermissionError(f"Los registros de '{nombre}' son inalterables y no se pueden modificar.")
     with _LOCK:
         s = _store(tid)
         n_total = 0
@@ -481,7 +510,7 @@ def actualizar(nombre, col_clave, valor, cambios, tid=None):
             while len(datos) < n_total:  # conserva el largo para no dejar filas viejas sueltas
                 datos.append([""] * len(enc))
             try:
-                _hoja(tid, nombre).update(range_name="A1", values=datos)
+                _hoja(tid, nombre).update(range_name="A1", values=datos, value_input_option="RAW")
             except Exception as e:
                 s["hojas"].pop(nombre, None)
                 raise ErrorNube(f"No se pudo actualizar '{nombre}' en Google Sheets: {e}") from e
@@ -492,11 +521,17 @@ def resumen_tablas(tid=None):
     return {t: len(leer(t, tid=tid)) for t in ESQUEMA}
 
 
-def log(usuario, accion, detalle="", tid=None):
+def contexto(rol="", pagina=""):
+    """La app fija aquí el rol y la pantalla actuales; quedan escritos en cada registro de auditoría."""
+    _CTX.rol, _CTX.pagina = rol, pagina
+
+
+def log(usuario, accion, detalle="", tid=None, tipo="DATO"):
     """Auditoría del geriátrico. Nunca debe romper la app."""
     try:
         agregar("logs", {"Fecha_Hora": fmt_fh(), "Usuario": usuario, "Accion": accion,
-                         "Detalle": str(detalle)[:300]}, tid=tid)
+                         "Detalle": str(detalle)[:300], "Rol": getattr(_CTX, "rol", ""),
+                         "Pagina": getattr(_CTX, "pagina", ""), "Tipo": tipo}, tid=tid)
     except Exception:
         pass
 
@@ -512,21 +547,53 @@ def log_control(actor, accion, detalle=""):
 # ──────────────────────────────────────────────────────────────
 # Usuarios de un geriátrico y contraseñas
 # ──────────────────────────────────────────────────────────────
-def hash_pw(pw, sal=None):
-    sal = sal or _pysecrets.token_hex(8)
-    h = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), sal.encode(), 120_000).hex()
-    return f"pbkdf2${sal}${h}"
+_ITER = 310_000     # vueltas de PBKDF2 para claves nuevas
+_ITER_VIEJO = 120_000  # formato anterior: pbkdf2$sal$hash
+
+
+def hash_pw(pw, sal=None, iteraciones=None):
+    sal = sal or _pysecrets.token_hex(16)
+    it = iteraciones or _ITER
+    h = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), sal.encode(), it).hex()
+    return f"pbkdf2${it}${sal}${h}"
 
 
 def verificar_pw(pw, guardado):
     guardado = str(guardado)
     if guardado.startswith("pbkdf2$"):
+        partes = guardado.split("$")
         try:
-            _, sal, h = guardado.split("$")
+            if len(partes) == 4:
+                _, it, sal, h = partes
+                it = int(it)
+            else:
+                _, sal, h = partes
+                it = _ITER_VIEJO
         except ValueError:
             return False
-        return hmac.compare_digest(hash_pw(pw, sal).split("$")[2], h)
-    return hmac.compare_digest(pw.encode("utf-8"), guardado.encode("utf-8"))  # clave en texto plano
+        calc = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), sal.encode(), it).hex()
+        return hmac.compare_digest(calc, h)
+    return hmac.compare_digest(pw.encode("utf-8"), guardado.encode("utf-8"))  # clave en texto plano (migración)
+
+
+def necesita_rehash(guardado):
+    g = str(guardado)
+    return not (g.startswith("pbkdf2$") and len(g.split("$")) == 4 and int(g.split("$")[1]) >= _ITER)
+
+
+def validar_clave(pw, estricta=False):
+    """Devuelve None si la clave es aceptable, o el motivo por el que no."""
+    minimo = 12 if estricta else 8
+    if len(pw) < minimo:
+        return f"Debe tener al menos {minimo} caracteres."
+    if not re.search(r"[A-Za-z]", pw) or not re.search(r"\d", pw):
+        return "Debe combinar letras y números."
+    if pw.lower() in {"12345678", "password1", "contrasena1", "geriatria1", "admin1234", "123456789a"}:
+        return "Esa clave es muy fácil de adivinar."
+    return None
+
+
+_DUMMY = hash_pw("relleno-para-igualar-tiempos")
 
 
 def autenticar(usuario, password):
@@ -534,11 +601,12 @@ def autenticar(usuario, password):
     df = leer("usuarios")
     f = df[(df["Usuario"].str.lower() == str(usuario).strip().lower()) & (df["Activo"].str.upper() != "NO")]
     if f.empty:
+        verificar_pw(password, _DUMMY)  # mismo tiempo de respuesta: no revela si el usuario existe
         return None
     reg = f.iloc[0]
     if not verificar_pw(password, reg["Password"]):
         return None
-    if not str(reg["Password"]).startswith("pbkdf2$"):  # migra claves antiguas
+    if necesita_rehash(reg["Password"]):  # migra claves antiguas al formato más fuerte
         actualizar("usuarios", "Usuario", reg["Usuario"], {"Password": hash_pw(password)})
     return reg.to_dict()
 
@@ -546,19 +614,48 @@ def autenticar(usuario, password):
 # ──────────────────────────────────────────────────────────────
 # PROPIETARIO: acceso, clientes, suscripciones y pagos
 # ──────────────────────────────────────────────────────────────
+def _owners(cfg):
+    """Propietarios habilitados: {usuario: clave_o_hash}. Soporta uno solo (owner_user/owner_password)
+    o varios socios con la sección [owners.<usuario>] password_hash = "..." en Secrets."""
+    out = {}
+    try:
+        for u, v in dict(cfg.get("owners") or {}).items():
+            v = dict(v) if not isinstance(v, str) else {"password_hash": v}
+            pw = v.get("password_hash") or v.get("password")
+            if pw:
+                out[str(u).strip().lower()] = pw
+    except Exception:
+        pass
+    pw = cfg.get("owner_password_hash") or cfg.get("owner_password")
+    if pw:
+        out.setdefault(str(cfg.get("owner_user") or "owner").strip().lower(), pw)
+    return out
+
+
 def owner_configurado(cfg):
-    return bool(cfg.get("owner_password") or cfg.get("owner_password_hash"))
+    return bool(_owners(cfg))
+
+
+def es_codigo_owner(cfg, codigo):
+    """¿El «código del geriátrico» escrito es en realidad el código secreto del propietario?"""
+    esperado = str(cfg.get("owner_code") or ("OWNER" if not hay_credenciales(cfg) else "")).strip().upper()
+    if not esperado:
+        return False
+    return hmac.compare_digest(str(codigo).strip().upper().encode(), esperado.encode())
 
 
 def verificar_owner(cfg, usuario, password):
     u, p = str(usuario).strip().lower(), str(password)
-    if not owner_configurado(cfg):
+    owners = _owners(cfg)
+    if not owners:
         if hay_credenciales(cfg):
             return False  # en producción el acceso del propietario exige configurarlo en Secrets
         return u == "owner" and p == "owner123"  # solo demostración local
-    ok_u = hmac.compare_digest(u.encode(), str(cfg.get("owner_user") or "owner").strip().lower().encode())
-    ok_p = verificar_pw(p, cfg.get("owner_password_hash") or cfg.get("owner_password"))
-    return ok_u and ok_p
+    guardado = owners.get(u)
+    if guardado is None:
+        verificar_pw(p, _DUMMY)
+        return False
+    return verificar_pw(p, guardado)
 
 
 def buscar_cliente(codigo):
@@ -642,11 +739,13 @@ def registrar_pago(codigo, monto, meses, metodo, nota="", actor="propietario"):
     cli = buscar_cliente(codigo)
     if cli is None:
         raise KeyError(codigo)
-    base = max(parsear_fecha(cli["Vence"]) or hoy(), hoy())
+    vence_ant = parsear_fecha(cli["Vence"])
+    atraso = (hoy() - vence_ant).days if vence_ant else ""   # >0 = pagó tarde · <=0 = a tiempo o adelantado
+    base = max(vence_ant or hoy(), hoy())
     nueva = sumar_meses(base, int(meses))
     agregar("pagos", {"ID": nueva_id("PG"), "Codigo": codigo, "Fecha": hoy().isoformat(), "Monto": monto,
                       "Metodo": metodo, "Periodo": f"{base.isoformat()} → {nueva.isoformat()}", "Nota": nota,
-                      "Registrado_Por": actor})
+                      "Registrado_Por": actor, "Dias_Atraso": atraso})
     actualizar("clientes", "Codigo", codigo, {"Vence": nueva.isoformat(), "Estado": "Activo"})
     log_control(actor, "PAGO", f"{codigo} · {monto} · hasta {nueva.isoformat()}")
     return nueva
@@ -665,6 +764,8 @@ _CAMPOS_SELLO = ["ID_Nota", "Cedula", "Fecha_Hora", "Turno", "Autor", "Subjetivo
 
 def sello_nota(r):
     base = "|".join(str(r.get(c, "")).replace("\r\n", "\n").strip() for c in _CAMPOS_SELLO)
+    if str(r.get("Hora_Inicio", "")).strip():  # las notas antiguas no la tienen: su sello no cambia
+        base += "|" + str(r["Hora_Inicio"]).strip()
     return hashlib.sha256(base.encode("utf-8")).hexdigest()[:20].upper()
 
 
@@ -824,3 +925,471 @@ def interpretar(escala, p, extra=None):
             t, n = "Deterioro cognitivo severo", "crit"
         return f"{t} (errores ajustados por escolaridad: {aj})", n
     return "", "ok"
+
+
+# ──────────────────────────────────────────────────────────────
+# Planes, módulos, roles y permisos
+# ──────────────────────────────────────────────────────────────
+MODULOS = {"Enfermeria": "🩺 Enfermería", "Cocina": "🍳 Cocina", "Aseo": "🧹 Servicios generales",
+           "Familias": "👨‍👩‍👧 Familias", "Contratos": "📄 Contratos", "Archivos": "🗂 Archivos",
+           "Monitor": "🖥 Monitor de actividad"}
+
+R_ADMIN, R_ENF, R_AUX, R_MED = "Administrador", "Enfermero/a", "Auxiliar de enfermería", "Médico/a"
+R_COC, R_AUXC, R_ASEO, R_FAM = "Cocinero/a", "Auxiliar de cocina", "Servicios generales", "Trabajo social / Familias"
+ROLES_TODOS = [R_ADMIN, R_ENF, R_AUX, R_MED, R_COC, R_AUXC, R_ASEO, R_FAM]
+
+PLANES = {
+    "Básico": {"max_usuarios": 7, "max_residentes": 15, "modulos": ["Enfermeria"],
+               "roles": [R_ADMIN, R_ENF, R_AUX],
+               "beneficios": ["Hasta 15 residentes y 7 usuarios", "Enfermería completa (notas, kardex, signos)"]},
+    "Estándar": {"max_usuarios": 15, "max_residentes": 30, "modulos": ["Enfermeria", "Cocina", "Aseo"],
+                 "roles": [R_ADMIN, R_ENF, R_AUX, R_COC, R_AUXC, R_ASEO],
+                 "beneficios": ["Hasta 30 residentes y 15 usuarios", "Cocina y servicios generales"]},
+    "Pro": {"max_usuarios": 30, "max_residentes": 60,
+            "modulos": ["Enfermeria", "Cocina", "Aseo", "Familias", "Archivos"],
+            "roles": [R_ADMIN, R_ENF, R_AUX, R_MED, R_COC, R_AUXC, R_ASEO, R_FAM],
+            "beneficios": ["Hasta 60 residentes y 30 usuarios", "Familias: alertas y reportes por WhatsApp",
+                           "Explorador de archivos", "Rol de médico"]},
+    "Premium": {"max_usuarios": 80, "max_residentes": 150, "modulos": list(MODULOS),
+                "roles": list(ROLES_TODOS),
+                "beneficios": ["Hasta 150 residentes y 80 usuarios", "Generador de contratos",
+                               "Monitor de actividad en tiempo real", "Aparece en el ranking de recomendados",
+                               "Soporte prioritario"]},
+    "Personalizado": {"max_usuarios": 10, "max_residentes": 25, "modulos": ["Enfermeria"],
+                      "roles": [R_ADMIN, R_ENF, R_AUX], "beneficios": ["Se arma a la medida"]},
+}
+
+# Qué roles entran a cada pantalla. El Administrador entra a todas (si el plan incluye el módulo).
+PAGINAS_GERIATRICO = [
+    # clave, icono, nombre, módulo, roles permitidos (None = todos)
+    ("Hub", "🏠", "Inicio", None, None),
+    ("Residentes", "👴", "Residentes", "Enfermeria", {R_ADMIN, R_ENF, R_AUX, R_MED, R_FAM}),
+    ("Medicamentos", "💊", "Dar medicamentos", "Enfermeria", {R_ADMIN, R_ENF, R_AUX, R_MED}),
+    ("Vitales", "🩺", "Signos vitales", "Enfermeria", {R_ADMIN, R_ENF, R_AUX, R_MED}),
+    ("SOAPIE", "📝", "Notas de enfermería", "Enfermeria", {R_ADMIN, R_ENF, R_AUX, R_MED}),
+    ("Kardex", "📋", "Kardex y stock de medicinas", "Enfermeria", {R_ADMIN, R_ENF, R_AUX, R_MED}),
+    ("Pertenencias", "🎒", "Pertenencias y aseo personal", "Enfermeria", {R_ADMIN, R_ENF, R_AUX}),
+    ("Salidas", "🚪", "Salidas y regresos", "Enfermeria", {R_ADMIN, R_ENF, R_AUX}),
+    ("Escalas", "📊", "Escalas geriátricas", "Enfermeria", {R_ADMIN, R_ENF, R_AUX, R_MED}),
+    ("Cocina", "🍳", "Cocina", "Cocina", {R_ADMIN, R_COC, R_AUXC}),
+    ("Aseo", "🧹", "Servicios generales", "Aseo", {R_ADMIN, R_ASEO}),
+    ("Familias", "👨‍👩‍👧", "Familias", "Familias", {R_ADMIN, R_FAM}),
+    ("Contratos", "📄", "Contratos", "Contratos", {R_ADMIN, R_FAM}),
+    ("Archivos", "🗂", "Archivos", "Archivos", {R_ADMIN}),
+    ("Monitor", "🖥", "Monitor de actividad", "Monitor", {R_ADMIN}),
+    ("Admin", "⚙️", "Administración", None, {R_ADMIN}),
+]
+
+
+def modulos_cliente(cli):
+    """Módulos que el plan del geriátrico incluye (Enfermería siempre)."""
+    txt = str((cli or {}).get("Modulos", "")).strip()
+    if not txt:
+        plan = PLANES.get(str((cli or {}).get("Plan", "")), PLANES["Pro"])
+        return set(plan["modulos"]) | {"Enfermeria"}
+    return {m.strip() for m in txt.split(",") if m.strip()} | {"Enfermeria"}
+
+
+def roles_cliente(cli):
+    txt = str((cli or {}).get("Roles_Permitidos", "")).strip()
+    if not txt:
+        plan = PLANES.get(str((cli or {}).get("Plan", "")), PLANES["Pro"])
+        return list(plan["roles"])
+    r = [x.strip() for x in txt.split(",") if x.strip()]
+    return r if R_ADMIN in r else [R_ADMIN] + r
+
+
+def paginas_permitidas(rol, cli):
+    mods = modulos_cliente(cli)
+    return [(k, i, n) for k, i, n, m, roles in PAGINAS_GERIATRICO
+            if (m is None or m in mods) and (roles is None or rol in roles)]
+
+
+def puede_ver(rol, cli, pagina):
+    return pagina in {k for k, _, _ in paginas_permitidas(rol, cli)}
+
+
+def puede_admitir(cli):
+    """(puede, motivo): respeta el límite de residentes del plan."""
+    mx = int(_num((cli or {}).get("Max_Residentes", 0)))
+    if not mx:
+        return True, ""
+    act = leer("residentes")
+    n = int((act["Estado"] != "Egresado").sum())
+    return (n < mx), f"Su plan permite {mx} residentes activos (hoy tiene {n})."
+
+
+# ──────────────────────────────────────────────────────────────
+# Seguridad: bloqueo por intentos fallidos (en el servidor, no se evade abriendo otra pestaña)
+# ──────────────────────────────────────────────────────────────
+_INTENTOS = {}   # clave -> {"fallos": n, "hasta": timestamp}
+
+
+def _clave_intento(*partes):
+    return hashlib.sha256("|".join(str(p).strip().lower() for p in partes).encode()).hexdigest()[:24]
+
+
+def segundos_bloqueo(*partes):
+    r = _INTENTOS.get(_clave_intento(*partes))
+    return max(0, int(r["hasta"] - time.time())) if r else 0
+
+
+def registrar_fallo(*partes, umbral=5):
+    with _LOCK:
+        r = _INTENTOS.setdefault(_clave_intento(*partes), {"fallos": 0, "hasta": 0.0})
+        r["fallos"] += 1
+        if r["fallos"] % umbral == 0:   # cada `umbral` fallos: 5, 10, 20, 40, 60 minutos
+            r["hasta"] = time.time() + min(60, 5 * 2 ** (r["fallos"] // umbral - 1)) * 60
+        return r["fallos"]
+
+
+def limpiar_fallos(*partes):
+    _INTENTOS.pop(_clave_intento(*partes), None)
+
+
+# ──────────────────────────────────────────────────────────────
+# Exportación segura y archivos
+# ──────────────────────────────────────────────────────────────
+def csv_seguro(df):
+    """CSV en bytes; neutraliza celdas que Excel/Sheets interpretarían como fórmulas."""
+    d = df.copy().astype(str)
+    d = d.apply(lambda c: c.map(lambda v: "'" + v if v[:1] in ("=", "+", "-", "@", "\t", "\r") and not _es_numero(v) else v))
+    return d.to_csv(index=False).encode("utf-8-sig")
+
+
+def _es_numero(v):
+    try:
+        float(v.replace(",", "."))
+        return True
+    except ValueError:
+        return False
+
+
+def nombre_seguro(n, largo=80):
+    n = re.sub(r"[^\w.\- ]", "_", str(n), flags=re.UNICODE).strip(" .") or "archivo"
+    return n[:largo]
+
+
+def _id_carpeta(url):
+    m = re.search(r"/folders/([A-Za-z0-9_-]+)", str(url or ""))
+    return m.group(1) if m else None
+
+
+_CARPETAS = {}   # (tid, ruta) -> id de carpeta en Drive
+
+
+def _raiz_geriatrico(a, tid):
+    s = _store(tid)
+    rid = _id_carpeta(s.get("carpeta_url"))
+    if rid:
+        return rid
+    sid = s["libro"].id
+    r = _chk(a["drive"].get(f"{_DRIVE}/{sid}", params={"fields": "parents"})).json()
+    if r.get("parents"):
+        return r["parents"][0]
+    raise ErrorNube("No se encontró la carpeta de este geriátrico en Drive.")
+
+
+def _ruta_drive(a, tid, cedula, nombre_res, categoria):
+    """Carpeta del geriátrico ▸ «cédula · nombre» ▸ categoría (se crean solas la primera vez)."""
+    clave = (tid, str(cedula), categoria)
+    if clave in _CARPETAS:
+        return _CARPETAS[clave]
+    padre = _raiz_geriatrico(a, tid)
+    if cedula:
+        padre = _asegurar_carpeta(a["drive"], f"{cedula} · {nombre_res}", padre)
+    fid = _asegurar_carpeta(a["drive"], categoria, padre)
+    _CARPETAS[clave] = fid
+    return fid
+
+
+def guardar_archivo(cfg, cedula, nombre_res, categoria, nombre_archivo, datos, mime, autor):
+    """Guarda un archivo en la carpeta del residente (Drive) o en disco (demostración). Devuelve la fila de 'archivos'."""
+    tid = tenant_actual()
+    aid, nom = nueva_id("AR"), nombre_seguro(nombre_archivo)
+    fila = {"ID": aid, "Cedula": cedula or "", "Categoria": categoria, "Nombre": nom, "Drive_ID": "", "Ruta_Local": "",
+            "Fecha_Hora": fmt_fh(), "Autor": autor, "Tamano": len(datos)}
+    if _libro(tid) is None:
+        d = os.path.join(DATA_DIR, re.sub(r"[^A-Za-z0-9_-]", "_", tid), "archivos",
+                         re.sub(r"[^A-Za-z0-9_-]", "_", str(cedula or "general")), nombre_seguro(categoria))
+        os.makedirs(d, exist_ok=True)
+        ruta = os.path.join(d, f"{aid}_{nom}")
+        with open(ruta, "wb") as f:
+            f.write(datos)
+        fila["Ruta_Local"] = ruta
+    else:
+        try:
+            a = _auth(cfg)
+            carpeta = _ruta_drive(a, tid, cedula, nombre_res, categoria)
+            b = _pysecrets.token_hex(12)
+            meta = json.dumps({"name": f"{aid}_{nom}", "parents": [carpeta]})
+            cuerpo = (f"--{b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n--{b}\r\n"
+                      f"Content-Type: {mime}\r\n\r\n").encode() + datos + f"\r\n--{b}--".encode()
+            r = _chk(a["drive"].post("https://www.googleapis.com/upload/drive/v3/files",
+                                     params={"uploadType": "multipart", "fields": "id"}, data=cuerpo,
+                                     headers={"Content-Type": f"multipart/related; boundary={b}"}))
+            fila["Drive_ID"] = r.json()["id"]
+        except ErrorNube:
+            raise
+        except Exception as e:
+            raise ErrorNube(f"No se pudo subir el archivo a Drive: {e}") from e
+    agregar("archivos", fila)
+    return fila
+
+
+def leer_archivo(cfg, fila):
+    """Bytes de un archivo registrado en 'archivos' (o None si no está)."""
+    if fila.get("Ruta_Local"):
+        ruta = os.path.abspath(fila["Ruta_Local"])
+        if not ruta.startswith(os.path.abspath(DATA_DIR)) or not os.path.exists(ruta):
+            return None
+        with open(ruta, "rb") as f:
+            return f.read()
+    if fila.get("Drive_ID"):
+        a = _auth(cfg)
+        return _chk(a["drive"].get(f"{_DRIVE}/{fila['Drive_ID']}", params={"alt": "media"})).content
+    return None
+
+
+def buscar_archivo(archivo_id):
+    df = leer("archivos")
+    f = df[df["ID"] == str(archivo_id)]
+    return None if f.empty else f.iloc[0].to_dict()
+
+
+# ──────────────────────────────────────────────────────────────
+# Medicamentos: horarios, ronda del día, administración con hora exacta y stock
+# ──────────────────────────────────────────────────────────────
+TURNOS = ["Mañana (07:00 - 13:00)", "Tarde (13:00 - 19:00)", "Noche (19:00 - 07:00)"]
+_VECES = {"Cada 4 h": 6, "Cada 6 h": 4, "Cada 8 h": 3, "Cada 12 h": 2, "Cada 24 h": 1}
+TOLERANCIA_MIN = 30   # minutos de margen antes de marcar una dosis como atrasada
+
+
+def turno_de(dt=None):
+    hh = (dt or ahora()).hour
+    return TURNOS[0] if 7 <= hh < 13 else TURNOS[1] if 13 <= hh < 19 else TURNOS[2]
+
+
+def horarios_lista(txt):
+    """'8:00, 20:00' -> ['08:00', '20:00']"""
+    out = []
+    for h_, m_ in re.findall(r"\b([01]?\d|2[0-3])[:.]([0-5]\d)\b", str(txt)):
+        out.append(f"{int(h_):02d}:{m_}")
+    return sorted(set(out))
+
+
+def dosis_por_dia(med):
+    n = len(horarios_lista(med.get("Horarios", ""))) or _VECES.get(str(med.get("Frecuencia", "")), 0)
+    return n * (_num(med.get("Unidades_Dosis", 1), 1) or 1)
+
+
+def _hora_a_dt(hhmm, dia=None):
+    h_, m_ = hhmm.split(":")
+    d = dia or hoy()
+    return datetime(d.year, d.month, d.day, int(h_), int(m_))
+
+
+def dosis_hoy(cedula=None):
+    """Ronda del día: cada dosis programada con su estado (Dado / Rechazado / Pendiente / Próximo / Atrasado)."""
+    meds = leer("kardex_meds")
+    meds = meds[meds["Estado"] == "Activo"]
+    res = leer("residentes")
+    res = res[res["Estado"] != "Egresado"]
+    if cedula:
+        meds = meds[meds["Cedula"] == cedula]
+    meds = meds[meds["Cedula"].isin(res["Cedula"])]
+    nombres = res.set_index("Cedula")[["Nombre", "Habitacion"]].to_dict("index")
+    ad = leer("admin_meds")
+    ad = ad[ad["Fecha_Hora"].str.startswith(hoy().isoformat())]
+    reg = {(r["ID_Med"], r["Hora_Programada"]): r for r in ad.to_dict("records") if r["Hora_Programada"]}
+    ahora_ = ahora()
+    out = []
+    for m in meds.to_dict("records"):
+        f_ini = parsear_fecha(m["F_Inicio"])
+        if f_ini and f_ini > hoy():
+            continue
+        for hh in horarios_lista(m["Horarios"]):
+            prog = _hora_a_dt(hh)
+            r = reg.get((m["ID_Med"], hh))
+            if r:
+                est = "Dado" if r["Resultado"] == "Administrado" else "No dado"
+            elif ahora_ > prog + timedelta(minutes=TOLERANCIA_MIN):
+                est = "Atrasado"
+            elif ahora_ >= prog - timedelta(minutes=60):
+                est = "Ahora"
+            else:
+                est = "Pendiente"
+            nr = nombres.get(m["Cedula"], {})
+            out.append({"ID_Med": m["ID_Med"], "Cedula": m["Cedula"], "Residente": nr.get("Nombre", m["Cedula"]),
+                        "Habitacion": nr.get("Habitacion", ""), "Medicamento": m["Medicamento"], "Dosis": m["Dosis"],
+                        "Via": m["Via"], "Indicaciones": m["Indicaciones"], "Hora": hh, "Estado": est,
+                        "Real": r["Fecha_Hora"][11:16] if r else "", "Quien": r["Autor"] if r else "",
+                        "Turno": r["Turno"] if r else "", "Desvio": r["Minutos_Desvio"] if r else "",
+                        "Observacion": r["Observacion"] if r else ""})
+    return sorted(out, key=lambda x: (x["Hora"], x["Residente"]))
+
+
+def registrar_dosis(cedula, id_med, hora_prog, resultado, obs, autor):
+    """Registra la administración con la hora EXACTA del clic. Evita doble registro de la misma dosis."""
+    meds = leer("kardex_meds")
+    f = meds[meds["ID_Med"] == id_med]
+    if f.empty:
+        raise KeyError(id_med)
+    med = f.iloc[0].to_dict()
+    ahora_ = ahora()
+    if hora_prog:
+        ad = leer("admin_meds", fresco=True)
+        ya = ad[(ad["ID_Med"] == id_med) & (ad["Hora_Programada"] == hora_prog) &
+                (ad["Fecha_Hora"].str.startswith(hoy().isoformat()))]
+        if not ya.empty:
+            raise ValueError("Esa dosis ya fue registrada hoy.")
+        desvio = int((ahora_ - _hora_a_dt(hora_prog)).total_seconds() // 60)
+    else:
+        desvio = ""
+    agregar("admin_meds", {"ID": nueva_id("AD"), "ID_Med": id_med, "Cedula": cedula, "Fecha_Hora": fmt_fh(ahora_),
+                           "Resultado": resultado, "Observacion": obs, "Autor": autor, "Hora_Programada": hora_prog or "",
+                           "Turno": turno_de(ahora_), "Minutos_Desvio": desvio})
+    if resultado == "Administrado":   # descuenta del stock de ese residente, si lo lleva
+        st_ = stock_meds(cedula)
+        if not st_.empty and (st_["Medicamento"].str.lower() == med["Medicamento"].strip().lower()).any():
+            agregar("mov_meds", {"ID": nueva_id("MV"), "Cedula": cedula, "Medicamento": med["Medicamento"].strip(),
+                                 "Tipo": "Consumo", "Cantidad": _num(med.get("Unidades_Dosis", 1), 1) or 1,
+                                 "Fecha_Hora": fmt_fh(ahora_), "Autor": autor, "Nota": f"Dosis de las {hora_prog or 'PRN'}"})
+    return desvio
+
+
+_SIGNO = {"Ingreso": 1, "Devolución": 1, "Consumo": -1, "Salida": -1}
+
+
+def stock_meds(cedula=None):
+    """Existencias de medicamentos por residente y días que le alcanzan."""
+    mv = leer("mov_meds")
+    if cedula:
+        mv = mv[mv["Cedula"] == cedula]
+    if mv.empty:
+        return pd.DataFrame(columns=["Cedula", "Medicamento", "Stock", "Dosis_Dia", "Dias", "Nivel"])
+    mv = mv.assign(_k=mv["Medicamento"].str.strip().str.lower(),
+                   _v=[_SIGNO.get(t, 1) * _num(c) if t != "Ajuste" else _num(c) for t, c in zip(mv["Tipo"], mv["Cantidad"])])
+    g = mv.groupby(["Cedula", "_k"]).agg(Medicamento=("Medicamento", "last"), Stock=("_v", "sum")).reset_index()
+    kar = leer("kardex_meds")
+    kar = kar[kar["Estado"] == "Activo"]
+    dpd = {(r["Cedula"], r["Medicamento"].strip().lower()): dosis_por_dia(r) for r in kar.to_dict("records")}
+    g["Dosis_Dia"] = [dpd.get((c, k), 0) for c, k in zip(g["Cedula"], g["_k"])]
+    g["Dias"] = [round(s_ / d, 1) if d else None for s_, d in zip(g["Stock"], g["Dosis_Dia"])]
+    g["Nivel"] = ["crit" if s_ <= 0 or (d is not None and d <= 2) else "warn" if (d is not None and d <= 5) else "ok"
+                  for s_, d in zip(g["Stock"], g["Dias"])]
+    return g.drop(columns="_k")
+
+
+# ──────────────────────────────────────────────────────────────
+# Inventarios de Cocina y Servicios generales
+# ──────────────────────────────────────────────────────────────
+def stock_inventario(seccion):
+    """Producto, existencias, mínimo y días estimados que alcanza, con nivel de alerta."""
+    pr = leer("inv_productos")
+    pr = pr[(pr["Seccion"] == seccion) & (pr["Activo"].str.upper() != "NO")]
+    if pr.empty:
+        return pd.DataFrame(columns=["Producto", "Unidad", "Stock", "Minimo", "Consumo_Diario", "Dias", "Nivel"])
+    mv = leer("inv_mov")
+    mv = mv[mv["Seccion"] == seccion]
+    mv = mv.assign(_v=[(-1 if t == "Consumo" else 1) * _num(c) for t, c in zip(mv["Tipo"], mv["Cantidad"])])
+    tot = mv.groupby("Producto")["_v"].sum().to_dict()
+    filas = []
+    for p in pr.to_dict("records"):
+        stk, mini, cd = tot.get(p["Producto"], 0.0), _num(p["Minimo"]), _num(p["Consumo_Diario"])
+        dias = round(stk / cd, 1) if cd else None
+        crit = stk <= 0 or (mini and stk <= mini / 2)
+        warn = (mini and stk <= mini) or (dias is not None and dias <= 3)
+        filas.append({"Producto": p["Producto"], "Unidad": p["Unidad"], "Stock": round(stk, 2), "Minimo": mini,
+                      "Consumo_Diario": cd, "Dias": dias, "Nivel": "crit" if crit else "warn" if warn else "ok"})
+    return pd.DataFrame(filas)
+
+
+def alertas_stock(seccion):
+    d = stock_inventario(seccion)
+    return d[d["Nivel"] != "ok"] if not d.empty else d
+
+
+# ──────────────────────────────────────────────────────────────
+# Familias: pagos del residente y alertas de vencimiento
+# ──────────────────────────────────────────────────────────────
+def alertas_pago(dias=5):
+    """Residentes activos cuyo pago vence en <= `dias` días (o ya venció)."""
+    res = leer("residentes")
+    res = res[res["Estado"] != "Egresado"]
+    out = []
+    for r in res.to_dict("records"):
+        v = parsear_fecha(r["Pagado_Hasta"])
+        if v is None:
+            continue
+        d = (v - hoy()).days
+        if d <= dias:
+            out.append({**r, "Dias": d, "Vence": v.isoformat()})
+    return sorted(out, key=lambda x: x["Dias"])
+
+
+def registrar_pago_familia(cedula, monto, meses, metodo, autor):
+    res = leer("residentes")
+    f = res[res["Cedula"] == cedula]
+    if f.empty:
+        raise KeyError(cedula)
+    ant = parsear_fecha(f.iloc[0]["Pagado_Hasta"])
+    atraso = (hoy() - ant).days if ant else ""
+    nueva = sumar_meses(max(ant or hoy(), hoy()), int(meses))
+    agregar("pagos_familia", {"ID": nueva_id("PF"), "Cedula": cedula, "Fecha": hoy().isoformat(), "Monto": monto,
+                              "Metodo": metodo, "Pagado_Hasta": nueva.isoformat(), "Dias_Atraso": atraso, "Autor": autor})
+    actualizar("residentes", "Cedula", cedula, {"Pagado_Hasta": nueva.isoformat()})
+    return nueva
+
+
+# ──────────────────────────────────────────────────────────────
+# Propietario: ranking de geriátricos cumplidos
+# ──────────────────────────────────────────────────────────────
+def ranking_puntualidad(minimo_pagos=2):
+    """Ordena los geriátricos por cumplimiento de pagos. Paga el día de vencimiento o antes = puntual."""
+    cl = leer("clientes")
+    pg = leer("pagos")
+    filas = []
+    for c in cl.to_dict("records"):
+        mios = pg[(pg["Codigo"] == c["Codigo"]) & (pg["Dias_Atraso"].str.strip() != "")]
+        d = [_num(x) for x in mios["Dias_Atraso"]]
+        ok, _, dias_v = estado_servicio(c)
+        n = len(d)
+        if n:
+            a_tiempo = sum(1 for x in d if x <= 0) / n
+            atraso_prom = sum(max(x, 0) for x in d) / n
+            score = max(0.0, 100 * a_tiempo - min(2 * atraso_prom, 40)) + min(n, 12) * 0.5
+            score = min(100.0, score)
+        else:
+            a_tiempo, atraso_prom, score = 0.0, 0.0, 0.0
+        al_dia = ok and (dias_v is None or dias_v >= 0)
+        filas.append({"Codigo": c["Codigo"], "Nombre": c["Nombre"], "Plan": c["Plan"], "Pagos": n,
+                      "APuntual": round(100 * a_tiempo), "AtrasoProm": round(atraso_prom, 1),
+                      "Puntaje": round(score, 1), "AlDia": al_dia,
+                      "Elegible": n >= minimo_pagos and al_dia})
+    filas.sort(key=lambda x: (x["Elegible"], x["Puntaje"], x["Pagos"]), reverse=True)
+    pos = 0
+    for f in filas:
+        if f["Elegible"]:
+            pos += 1
+            f["Posicion"] = pos
+        else:
+            f["Posicion"] = None
+    return filas
+
+
+CATEGORIAS_CARPETA = ["Pertenencias", "Medicamentos", "Anexos", "Reportes", "Salidas", "Contratos"]
+
+
+def crear_carpetas_residente(cfg, cedula, nombre):
+    """Crea «cédula · nombre» con sus subcarpetas (Pertenencias, Medicamentos, Anexos…). True si quedaron listas."""
+    tid = tenant_actual()
+    if _libro(tid) is None:
+        for c in CATEGORIAS_CARPETA:
+            os.makedirs(os.path.join(DATA_DIR, re.sub(r"[^A-Za-z0-9_-]", "_", tid), "archivos",
+                                     re.sub(r"[^A-Za-z0-9_-]", "_", str(cedula)), c), exist_ok=True)
+        return True
+    a = _auth(cfg)
+    for c in CATEGORIAS_CARPETA:
+        _ruta_drive(a, tid, cedula, nombre, c)
+    return True
