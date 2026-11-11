@@ -47,7 +47,16 @@ html{font-size:17px}
 .stApp h5{color:var(--navy);font-weight:800;font-size:1.15rem}
 .block-container{padding:1.6rem 2rem 4rem!important;max-width:1400px}
 #MainMenu,footer,[data-testid="stToolbar"],[data-testid="stDecoration"]{display:none!important}
-[data-testid="stHeader"]{background:transparent}
+[data-testid="stHeader"]{background:transparent;z-index:999990}
+/* La flechita para abrir la barra lateral SIEMPRE visible y grande (celular y PC) */
+[data-testid="stSidebarCollapsedControl"],[data-testid="collapsedControl"]{display:flex!important;visibility:visible!important;opacity:1!important;
+ z-index:999999!important;background:var(--navy);border-radius:0 14px 14px 0;padding:8px 6px;top:.6rem}
+[data-testid="stSidebarCollapsedControl"] button,[data-testid="collapsedControl"] button{min-height:2.4rem}
+[data-testid="stSidebarCollapsedControl"] svg,[data-testid="collapsedControl"] svg{color:#fff!important;fill:#fff!important}
+/* Barra de menú fija arriba */
+.st-key-barra_top{position:sticky;top:.4rem;z-index:1000;background:rgba(243,246,250,.96);backdrop-filter:blur(6px);
+ border:1px solid var(--line);border-radius:16px;padding:6px 10px;margin:0 0 14px;box-shadow:0 8px 20px -12px rgba(11,31,58,.35)}
+.st-key-barra_top button{min-height:2.7rem!important;padding:.3rem .8rem!important}
 
 /* Cabecera de cada sección */
 .banner{border-radius:22px;padding:18px 24px;margin:0 0 18px;display:flex;gap:18px;align-items:center;
