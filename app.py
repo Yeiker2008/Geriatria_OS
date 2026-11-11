@@ -300,6 +300,35 @@ with st.sidebar:
                 st.rerun()
         _vigilante()
 
+def barra_superior():
+    """Menú SIEMPRE visible arriba (no depende de la barra lateral, que en el celular se puede perder)."""
+    try:
+        cont = st.container(key="barra_top")
+    except TypeError:
+        cont = st.container()
+    inicio = PAGINAS[0][0]
+    with cont:
+        c1, c2, c3 = st.columns([1.3, 1.3, 2.4])
+        if PAG != inicio and c1.button("🏠 Inicio", key="top_inicio", **KW):
+            st.session_state.pagina = inicio
+            st.rerun()
+        pop = c2.popover("☰ Menú", **KW) if hasattr(st, "popover") else c2.expander("☰ Menú")
+        with pop:
+            for clave, icono, nombre in PAGINAS:
+                if st.button(f"{icono}  {nombre}", key=f"top_{clave}", type="primary" if PAG == clave else "secondary", **KW):
+                    st.session_state.pagina = clave
+                    st.rerun()
+            if st.button("🚪  Cerrar sesión", key="top_salir", **KW):
+                if ES_OWNER:
+                    N.log_control(st.session_state.usuario, "LOGOUT_PROPIETARIO")
+                else:
+                    N.log(st.session_state.usuario, "LOGOUT", tipo="SEGURIDAD")
+                _cerrar_sesion()
+        nombre_pag = next((f"{i} {n}" for k, i, n in PAGINAS if k == PAG), "")
+        c3.markdown(f"<div style='padding-top:.55rem;font-weight:800;color:#0B1F3A;text-align:right'>{h(nombre_pag)}</div>", unsafe_allow_html=True)
+
+
+barra_superior()
 U.mostrar_flash()
 if not ES_OWNER and not N.estado_nube()["conectado"]:
     st.warning("💾 **Modo demostración local.** Los datos se guardan solo en este servidor y pueden perderse al reiniciar la app.")
